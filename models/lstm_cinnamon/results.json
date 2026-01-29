@@ -1,0 +1,11 @@
+{
+    "mae": 110.30582560221355,
+    "rmse": 128.07190085078116,
+    "r2": 0.8956483066322383,
+    "best_params": null,
+    "tuning_method": null,
+    "tuning_used": false,
+    "epochs_trained": 10,
+    "final_train_loss": 0.014495345763862133,
+    "final_val_loss": 0.013360283337533474
+}

@@ -1,0 +1,17 @@
+streamlit
+pandas
+numpy
+scikit-learn
+plotly
+tensorflow
+optuna
+matplotlib
+googlesearch-python
+google-generativeai
+textblob
+python-dotenv
+fastapi
+uvicorn
+pydantic
+fastapi-cors
+
