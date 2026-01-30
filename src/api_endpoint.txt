@@ -1,0 +1,12 @@
+
+@app.get("/news")
+async def get_news():
+    """
+    Fetch market intelligence (Sentiment, Confidence, Summary).
+    """
+    try:
+        # In a real app, you might want to cache this result as it includes web scraping
+        result = get_market_intelligence()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -124,7 +124,6 @@ def load_and_prepare_data(data_path):
         df_melted['Grade'] = df_melted['Grade'].apply(lambda x: x.replace('Cinnamon_Grade_', ''))
         
         # Add dummy mock features required by model
-        # In a real scenario, these would come from external sources
         np.random.seed(42) # For reproducibility
         df_melted['Region'] = 'Colombo' # Default region
         df_melted['Is_Active_Region'] = 1
@@ -140,12 +139,33 @@ def load_and_prepare_data(data_path):
         ]
         
         for col in external_features:
-            # Generate somewhat realistic looking random series
             df_melted[col] = np.random.uniform(10, 100, size=len(df_melted))
             
         df = df_melted
+
+    elif 'Regional_Price' in df.columns and 'Region' in df.columns:
+        logger.info("Detected long schema. Enriching with derived features...")
+        # Already long format, but likely needs enrichment of external features if missing
         
+        np.random.seed(42)
+        if 'Is_Active_Region' not in df.columns:
+            df['Is_Active_Region'] = 1
+        
+        if 'National_Price' not in df.columns:
+             df['National_Price'] = df['Regional_Price'] * 1.1 + np.random.normal(0, 50, len(df))
+             
+        external_features = [
+            'Seasonal_Impact', 'Local_Production_Volume', 'Local_Export_Volume', 
+            'Global_Production_Volume', 'Global_Consumption_Volume', 'Temperature', 
+            'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price'
+        ]
+        
+        for col in external_features:
+            if col not in df.columns:
+                df[col] = np.random.uniform(10, 100, size=len(df))
+
     return preprocess_data(df)
+
 
 
 def prepare_sequences(df, sequence_length=12, target_col='Regional_Price'):

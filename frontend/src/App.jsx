@@ -3,6 +3,8 @@ import axios from 'axios';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { LayoutDashboard, TrendingUp, RefreshCw, AlertCircle, Calendar } from 'lucide-react';
 import './App.css';
+import IntelligenceCard from './components/IntelligenceCard';
+
 
 // Configure Axios base URL
 const API_URL = 'http://127.0.0.1:8000';
@@ -11,6 +13,7 @@ const API_URL = 'http://127.0.0.1:8000';
 function App() {
   const [regions, setRegions] = useState([]);
   const [grades, setGrades] = useState([]);
+  const [allGradesCombinations, setAllGradesCombinations] = useState({});
 
   const [selectedRegion, setSelectedRegion] = useState('');
   const [selectedGrade, setSelectedGrade] = useState('');
@@ -29,9 +32,23 @@ function App() {
         setRegions(response.data.regions || []);
         setGrades(response.data.grades || []);
 
+        // Save the map for dependent filtering
+        if (response.data.grades_by_region) {
+          setAllGradesCombinations(response.data.grades_by_region);
+        }
+
         // Set defaults
-        if (response.data.regions.length > 0) setSelectedRegion(response.data.regions[0]);
-        if (response.data.grades.length > 0) setSelectedGrade(response.data.grades[0]);
+        if (response.data.regions.length > 0) {
+          const initialRegion = response.data.regions[0];
+          setSelectedRegion(initialRegion);
+
+          // Set initial grade consistent with region
+          if (response.data.grades_by_region && response.data.grades_by_region[initialRegion]) {
+            setSelectedGrade(response.data.grades_by_region[initialRegion][0]);
+          } else if (response.data.grades.length > 0) {
+            setSelectedGrade(response.data.grades[0]);
+          }
+        }
       } catch (err) {
         console.error("Failed to fetch metadata:", err);
         setError("Could not connect to backend. Is uvicorn running?");
@@ -39,6 +56,24 @@ function App() {
     };
     fetchMetadata();
   }, []);
+
+  // Handle Region Change causing Grade Change
+  const handleRegionChange = (e) => {
+    const newRegion = e.target.value;
+    setSelectedRegion(newRegion);
+
+    // Filter grades for this new region
+    if (allGradesCombinations[newRegion]) {
+      const available = allGradesCombinations[newRegion];
+      // If current grade is not in available, switch to first available
+      if (!available.includes(selectedGrade)) {
+        setSelectedGrade(available[0] || '');
+      }
+    }
+  };
+
+  // Determine current available grades
+  const currentGrades = allGradesCombinations[selectedRegion] || grades;
 
   const handleForecast = async () => {
     setLoading(true);
@@ -50,19 +85,32 @@ function App() {
         months: forecastDate
       });
 
-      const { dates, prices } = response.data.forecast;
+      const { dates: fDates, prices: fPrices } = response.data.forecast;
+      const { dates: hDates, prices: hPrices } = response.data.history || { dates: [], prices: [] };
 
-      // Transform for Recharts
-      // We assume the backend returns a sequence. 
-      // Ideally backend returns history + forecast. 
-      // If backend only returns forecast, we just plot that or ask backend for history too.
-      // For now, let's plot the forecast.
-      const chartData = dates.map((date, index) => ({
+      // Combine for Recharts
+      // History data: { name: date, History: price, Forecast: null }
+      const historyData = hDates.map((date, index) => ({
         name: date,
-        Price: prices[index]
+        History: hPrices[index],
+        Forecast: null
       }));
 
-      setForecastData(chartData);
+      // Connect the last history point to the first forecast point visually
+      if (hDates.length > 0 && fDates.length > 0) {
+        historyData[historyData.length - 1].Forecast = historyData[historyData.length - 1].History;
+      }
+
+      // Forecast data: { name: date, History: null, Forecast: price }
+      const forecastChartData = fDates.map((date, index) => ({
+        name: date,
+        History: null,
+        Forecast: fPrices[index]
+      }));
+
+      const fullChartData = [...historyData, ...forecastChartData];
+
+      setForecastData(fullChartData);
     } catch (err) {
       console.error("Forecast failed:", err);
       setError("Failed to generate forecast. " + (err.response?.data?.detail || err.message));
@@ -93,7 +141,7 @@ function App() {
         <div className="controls">
           <div className="control-group">
             <label>Region</label>
-            <select value={selectedRegion} onChange={(e) => setSelectedRegion(e.target.value)}>
+            <select value={selectedRegion} onChange={handleRegionChange}>
               {regions.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
           </div>
@@ -101,13 +149,14 @@ function App() {
           <div className="control-group">
             <label>Grade</label>
             <select value={selectedGrade} onChange={(e) => setSelectedGrade(e.target.value)}>
-              {grades.map(g => <option key={g} value={g}>{g}</option>)}
+              {currentGrades.map(g => <option key={g} value={g}>{g}</option>)}
             </select>
           </div>
 
-          <button className="primary-btn" onClick={handleForecast} disabled={loading}>
+          <button className="primary-btn" onClick={handleForecast} disabled={loading || !selectedRegion || !selectedGrade}>
             {loading ? 'Forecasting...' : 'Generate Forecast'}
           </button>
+
 
           <div className="divider"></div>
 
@@ -129,7 +178,10 @@ function App() {
 
         {error && <div className="error-banner"><AlertCircle size={18} /> {error}</div>}
 
+        <IntelligenceCard />
+
         <div className="dashboard-grid">
+
           {/* Metric Cards */}
           <div className="card metric">
             <h3>Selected Grade</h3>
@@ -137,13 +189,27 @@ function App() {
           </div>
           <div className="card metric">
             <h3>Latest Price</h3>
-            <p className="value">{forecastData ? `LKR ${forecastData[0]?.Price}` : '-'}</p>
+            {/* Use the last available price (forecast or history) */}
+            <p className="value">
+              {forecastData ?
+                `LKR ${(forecastData.findLast(d => d.Forecast !== null)?.Forecast || forecastData.findLast(d => d.History !== null)?.History)}`
+                : '-'}
+            </p>
             <span className="subtext">Estimated current</span>
           </div>
           <div className="card metric">
             <h3>Next 6 Months</h3>
             <p className="value" style={{ color: '#4caf50' }}>
-              {forecastData ? ((forecastData[forecastData.length - 1].Price - forecastData[0].Price) > 0 ? 'Trending Up' : 'Trending Down') : '-'}
+              {/* Calc trend based on forecast start vs end */}
+              {forecastData ?
+                (() => {
+                  const forecastPoints = forecastData.filter(d => d.Forecast !== null);
+                  if (forecastPoints.length < 2) return '-';
+                  const start = forecastPoints[0].Forecast;
+                  const end = forecastPoints[forecastPoints.length - 1].Forecast;
+                  return (end - start) > 0 ? 'Trending Up' : 'Trending Down';
+                })()
+                : '-'}
             </p>
           </div>
         </div>
@@ -155,13 +221,14 @@ function App() {
               <ResponsiveContainer width="100%" height={400}>
                 <LineChart data={forecastData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee" />
-                  <XAxis dataKey="name" stroke="#888" />
-                  <YAxis stroke="#888" />
+                  <XAxis dataKey="name" stroke="#888" tick={{ fontSize: 12 }} interval="preserveStartEnd" minTickGap={50} />
+                  <YAxis stroke="#888" domain={['auto', 'auto']} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#fff', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
                   />
                   <Legend />
-                  <Line type="monotone" dataKey="Price" stroke="#FF4B4B" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+                  <Line type="monotone" dataKey="History" stroke="#3b82f6" strokeWidth={2} dot={false} activeDot={{ r: 6 }} name="Historical" />
+                  <Line type="monotone" dataKey="Forecast" stroke="#FF4B4B" strokeWidth={3} strokeDasharray="5 5" dot={{ r: 4 }} activeDot={{ r: 6 }} name="Forecast" />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
@@ -172,6 +239,7 @@ function App() {
             )}
           </div>
         </div>
+
       </main>
 
       <style>{`

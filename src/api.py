@@ -14,9 +14,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from src import forecasting_engine as engine
+    from src.news_agent import get_market_intelligence
 except ImportError:
     # If running from root without package structure
     import forecasting_engine as engine
+    from news_agent import get_market_intelligence
+
 
 app = FastAPI(title="Spice Market Scout API", version="1.0.0")
 
@@ -71,19 +74,36 @@ async def get_metadata():
     
     df = pd.read_csv(data_path)
     
-    # Extract grades
-    grade_cols = [col for col in df.columns if 'Cinnamon_Grade_' in col]
-    grades = [col.replace('Cinnamon_Grade_', '') for col in grade_cols]
+    # Extract available combinations
+    # returns {"Colombo": ["Grade1", "Grade2"], ...}
+    series_map = {}
+    if 'Region' in df.columns and 'Grade' in df.columns:
+        # Get unique pairs
+        pairs = df[['Region', 'Grade']].drop_duplicates()
+        for _, row in pairs.iterrows():
+            r, g = row['Region'], row['Grade']
+            if r not in series_map:
+                series_map[r] = []
+            series_map[r].append(g)
+            
+    print(f"DEBUG: Regions found: {len(series_map.keys())}")
+    print(f"DEBUG: Sample map: {str(series_map)[:100]}")
+
     
-    # Extract regions (mocked if not present, as per dashboard logic)
-    regions = ["Colombo", "Galle", "Matara", "Kandy"]
-    if 'Region' in df.columns:
-        regions = df['Region'].unique().tolist()
+    # Sort for consistency
+    regions = sorted(series_map.keys())
+    for r in regions:
+        series_map[r].sort()
         
+    # Flatten unique grades for fallback or full list
+    all_grades = sorted(list(set([g for grades in series_map.values() for g in grades])))
+
     return {
         "regions": regions,
-        "grades": grades
+        "grades": all_grades,
+        "grades_by_region": series_map
     }
+
 
 @app.post("/predict")
 async def predict(request: PredictRequest):
@@ -164,13 +184,23 @@ async def predict(request: PredictRequest):
             "forecast": {
                 "dates": dates,
                 "prices": prices
+            },
+            "history": {
+                "dates": df['Date'].dt.strftime("%Y-%m-%d").tail(90).tolist(),
+                "prices": df['Regional_Price'].astype(float).tail(90).tolist()
             }
+
         }
+
         
+    except HTTPException:
+        raise
     except Exception as e:
         # Log the full error for debugging
         print(f"Prediction Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 def run_training_task(epochs: int):
@@ -204,6 +234,21 @@ async def retrain(request: RetrainRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_training_task, request.epochs)
     return {"status": "Training started in background", "epochs": request.epochs}
 
+@app.get("/news")
+async def get_news():
+    """
+    Fetch market intelligence (Sentiment, Confidence, Summary).
+    """
+    try:
+        # In a real app, you might want to cache this result as it includes web scraping
+        result = get_market_intelligence()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Run with: uvicorn src.api:app --reload
 if __name__ == "__main__":
-    uvicorn.run("src.api:app", host="0.0.0.0", port=8000, reload=True)
+    # Reload=True can cause issues with TensorFlow on Windows
+    # We pass the app object directly since reload is False (safe for script execution)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
