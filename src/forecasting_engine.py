@@ -753,43 +753,26 @@ def forecast_prices(model, df, days_ahead=30):
 if __name__ == "__main__":
     # Example usage with mock data adapter for verification
     # Since the original complex dataset is likely missing, we adapt the simple mock data
-    base_dir = os.path.dirname(os.path.dirname(__file__))
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     data_path = os.path.join(base_dir, 'data', 'processed', 'spice_prices.csv')
     
     if os.path.exists(data_path):
-        print(f"Loading mock data for verification from {data_path}")
-        raw_df = pd.read_csv(data_path)
-        if 'Date' in raw_df.columns:
-            raw_df['Date'] = pd.to_datetime(raw_df['Date'])
-        
-        # Melt to get Grade and Price if seemingly pivoted
-        if 'Cinnamon_Grade_ALBA' in raw_df.columns:
-            df_melted = raw_df.melt(id_vars=['Date', 'Market_Sentiment'], 
-                                   value_vars=['Cinnamon_Grade_ALBA', 'Cinnamon_Grade_C5'],
-                                   var_name='Grade', value_name='Regional_Price')
+        print(f"Loading data from {data_path}")
+        # The engine.load_and_prepare_data function handles both wide and long formats now.
+        # We can just use it directly.
+        try:
+            df = load_and_prepare_data(data_path)
             
-            # Map columns
-            df_melted['Grade'] = df_melted['Grade'].apply(lambda x: x.replace('Cinnamon_Grade_', ''))
-            
-            # Add missing dummy features required by prepare_sequences
-            df_melted['Region'] = 'Colombo' # Dummy region
-            df_melted['Is_Active_Region'] = 1
-            df_melted['National_Price'] = df_melted['Regional_Price'] * 1.1 + np.random.normal(0, 50, len(df_melted))
-            
-            # Add random dummy values for other features
-            for col in ['Seasonal_Impact', 'Local_Production_Volume', 'Local_Export_Volume', 
-                       'Global_Production_Volume', 'Global_Consumption_Volume', 'Temperature', 
-                       'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price']:
-                df_melted[col] = np.random.uniform(10, 100, size=len(df_melted))
-            
-            # Use the new preprocess function
-            processed_df = preprocess_data(df_melted)
-            
-            # Run training (fast mode)
+            # Run training
             print("Running training test...")
-            train_model(processed_df, use_tuning=False, epochs=2)
+            # We use Fast training for verification, but for real fix we should use reasonable epochs
+            train_model(df, use_tuning=False, epochs=15)
+            print("Training complete.")
             
-        else:
-            print("Mock data schema not recognized (expected pivoted grades).")
+        except Exception as e:
+            print(f"Training failed: {e}")
+            import traceback
+            traceback.print_exc()
+
     else:
         print(f"Data file not found at {data_path}")

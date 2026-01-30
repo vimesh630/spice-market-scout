@@ -222,10 +222,12 @@ function App() {
                 <LineChart data={forecastData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee" />
                   <XAxis dataKey="name" stroke="#888" tick={{ fontSize: 12 }} interval="preserveStartEnd" minTickGap={50} />
-                  <YAxis stroke="#888" domain={['auto', 'auto']} />
+                  <YAxis stroke="#888" domain={['auto', 'auto']} label={{ value: 'Price (LKR/kg)', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: '#888' } }} />
                   <Tooltip
+                    formatter={(value) => [`LKR ${value}`, 'Price']}
                     contentStyle={{ backgroundColor: '#fff', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
                   />
+
                   <Legend />
                   <Line type="monotone" dataKey="History" stroke="#3b82f6" strokeWidth={2} dot={false} activeDot={{ r: 6 }} name="Historical" />
                   <Line type="monotone" dataKey="Forecast" stroke="#FF4B4B" strokeWidth={3} strokeDasharray="5 5" dot={{ r: 4 }} activeDot={{ r: 6 }} name="Forecast" />
