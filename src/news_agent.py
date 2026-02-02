@@ -13,12 +13,11 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-def search_market_news(query="Sri Lanka Cinnamon Price trends 2026", num_results=5):
+def search_market_news(commodity="cinnamon", num_results=5):
     """
-    Fetches top news URLs and returns them as a list of strings.
-    In a real scenario, we might use a snippet extractor. 
-    Here we return 'Title - URL' as the string representation.
+    Fetches top news URLs and returns them as a list of strings for the specified commodity.
     """
+    query = f"Sri Lanka {commodity} Price trends 2026"
     logger.info(f"Searching for: {query}")
     try:
         # standard search returns URLs
@@ -40,7 +39,7 @@ def search_market_news(query="Sri Lanka Cinnamon Price trends 2026", num_results
             logger.error(f"Search failed completely: {e2}")
             return []
 
-def analyze_sentiment(news_list):
+def analyze_sentiment(news_list, commodity="cinnamon"):
     """
     Analyzes sentiment using Gemini.
     """
@@ -58,7 +57,7 @@ def analyze_sentiment(news_list):
         combined_text = "\n".join(news_list)
         
         prompt = f"""
-        Analyze these news snippets regarding Sri Lankan cinnamon. 
+        Analyze these news snippets regarding Sri Lankan {commodity}. 
         
         News Snippets:
         {combined_text}
@@ -82,16 +81,16 @@ def analyze_sentiment(news_list):
         logger.error(f"Sentiment analysis failed: {e}")
         return {'sentiment': 'Neutral', 'confidence': 0.0, 'summary': 'Analysis failed due to an error.'}
 
-def get_market_intelligence():
+def get_market_intelligence(commodity="cinnamon"):
     """
     Orchestrator function.
     """
-    logger.info("Fetching market intelligence...")
-    news_list = search_market_news()
-    intelligence = analyze_sentiment(news_list)
+    logger.info(f"Fetching market intelligence for {commodity}...")
+    news_list = search_market_news(commodity)
+    intelligence = analyze_sentiment(news_list, commodity)
     return intelligence
 
 if __name__ == "__main__":
     # Test run
-    data = get_market_intelligence()
+    data = get_market_intelligence("clove")
     print(json.dumps(data, indent=2))

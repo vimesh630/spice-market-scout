@@ -67,106 +67,133 @@ async def startup_event():
         print(f"Error loading model: {e}")
 
 @app.get("/metadata")
-async def get_metadata():
-    """Return available Regions and Grades"""
-    if not os.path.exists(data_path):
-        raise HTTPException(status_code=404, detail="Data file not found")
+async def get_metadata(commodity: str = 'cinnamon'):
+    """Return available Regions and Grades for the specified commodity"""
+    # Construct path based on commodity
+    commodity_file = f"{commodity}_prices.csv"
+    current_data_path = os.path.join(BASE_DIR, "data", "processed", commodity_file)
     
-    df = pd.read_csv(data_path)
-    
-    # Extract available combinations
-    # returns {"Colombo": ["Grade1", "Grade2"], ...}
-    series_map = {}
-    if 'Region' in df.columns and 'Grade' in df.columns:
-        # Get unique pairs
-        pairs = df[['Region', 'Grade']].drop_duplicates()
-        for _, row in pairs.iterrows():
-            r, g = row['Region'], row['Grade']
-            if r not in series_map:
-                series_map[r] = []
-            series_map[r].append(g)
-            
-    print(f"DEBUG: Regions found: {len(series_map.keys())}")
-    print(f"DEBUG: Sample map: {str(series_map)[:100]}")
+    # Fallback to default/global if not found (e.g. for legacy reasons or if file naming differs)
+    if not os.path.exists(current_data_path):
+        if commodity == 'cinnamon' and os.path.exists(data_path):
+             current_data_path = data_path
+        else:
+             print(f"DEBUG: File not found: {current_data_path}")
+             # Return empty or error? Let's return empty lists so frontend doesn't crash but shows nothing
+             return {
+                 "commodity": commodity, 
+                 "regions": [], 
+                 "grades": [], 
+                 "grades_by_region": {},
+                 "regions_by_grade": {}
+             }
 
-    
-    # Sort for consistency
-    regions = sorted(series_map.keys())
-    for r in regions:
-        series_map[r].sort()
+    try:
+        df = pd.read_csv(current_data_path)
         
-    # Flatten unique grades for fallback or full list
-    all_grades = sorted(list(set([g for grades in series_map.values() for g in grades])))
+        # Extract available combinations
+        # grades_by_region: {"Colombo": ["Grade1", "Grade2"], ...}
+        # regions_by_grade: {"Grade1": ["Colombo", "Kandy"], ...}
+        series_map = {}
+        reverse_map = {}
+        
+        if 'Region' in df.columns and 'Grade' in df.columns:
+            # Get unique pairs
+            pairs = df[['Region', 'Grade']].drop_duplicates()
+            for _, row in pairs.iterrows():
+                r, g = row['Region'], row['Grade']
+                
+                # Forward map (Region -> Grades)
+                if r not in series_map:
+                    series_map[r] = []
+                series_map[r].append(g)
+                
+                # Reverse map (Grade -> Regions)
+                if g not in reverse_map:
+                    reverse_map[g] = []
+                reverse_map[g].append(r)
+                
+        # Sort for consistency
+        regions = sorted(series_map.keys())
+        for r in regions:
+            series_map[r].sort()
+            
+        # Flatten unique grades
+        all_grades = sorted(list(set([g for grades in series_map.values() for g in grades])))
+        
+        # Sort reverse map
+        for g in all_grades:
+            if g in reverse_map:
+                reverse_map[g].sort()
 
-    return {
-        "regions": regions,
-        "grades": all_grades,
-        "grades_by_region": series_map
-    }
+        print(f"DEBUG: Metadata for {commodity}: {len(regions)} regions, {len(all_grades)} grades")
+
+        return {
+            "commodity": commodity,
+            "regions": regions,
+            "grades": all_grades,
+            "grades_by_region": series_map,
+            "regions_by_grade": reverse_map
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/predict")
-async def predict(request: PredictRequest):
+async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
     """Generate price forecast"""
-    global model
+    # Load model for specific commodity
+    model = engine.load_artifacts(commodity)
     if model is None:
-        # Try loading again or error
-        model = engine.load_artifacts()
-        if model is None:
-            raise HTTPException(status_code=503, detail="Model not loaded. Please train the model first.")
+        raise HTTPException(status_code=503, detail=f"Model for {commodity} not found. Please train first.")
             
-    if not os.path.exists(data_path):
-        raise HTTPException(status_code=404, detail="Data file not found")
+    # Determine data path based on commodity
+    commodity_file = f"{commodity}_prices.csv"
+    current_data_path = os.path.join(BASE_DIR, "data", "processed", commodity_file)
+    
+    if not os.path.exists(current_data_path):
+        raise HTTPException(status_code=404, detail=f"Data file for {commodity} not found")
 
     try:
         # Load and preprocess data using engine
-        # This now returns a Long format enriched dataframe (with all 45 features)
-        df = engine.load_and_prepare_data(data_path)
+        # This now returns a Long format enriched dataframe (with all features)
+        df = engine.load_and_prepare_data(current_data_path)
         
-        # Filter for the specific series (Grade and Region)
-        # Check if 'Grade' column exists (it should after enrichment)
-        if 'Grade' not in df.columns:
-             # Fallback logic if for some reason it's still wide (shouldn't happen with new engine)
-             grade_col = f"Cinnamon_Grade_{request.grade}"
-             if grade_col not in df.columns:
-                 raise HTTPException(status_code=400, detail=f"Grade {request.grade} not found in data")
-             # If wide, we are in trouble because forecast_prices expects 45 features now.
-             # But engine.load_and_prepare_data guarantees enrichment now.
-             pass
-        else:
+        # Filter logic (Region/Grade)
+        if 'Grade' in df.columns:
             # Filter by Grade
+            valid_grades = df['Grade'].unique()
+            if request.grade not in valid_grades:
+                 # Fallback: Use first available grade if requested not found? 
+                 # Or specific error. Let's return error but list available.
+                 raise HTTPException(status_code=400, detail=f"Grade {request.grade} not found. Available: {list(valid_grades)}")
+            
             df = df[df['Grade'] == request.grade]
-            if df.empty:
-                raise HTTPException(status_code=400, detail=f"Grade {request.grade} or data not found")
             
             # Filter by Region if it exists in data
-            # The mock data currently only creates 'Colombo'. 
-            # If the user requests 'Galle', and we filter, we get empty.
-            # Behavior: If requested region exists, use it. Else use what's available (Mock fallback).
             if 'Region' in df.columns:
-                if request.region in df['Region'].unique():
+                valid_regions = df['Region'].unique()
+                if request.region in valid_regions:
                     df = df[df['Region'] == request.region]
                 else:
-                    # If specific region not found, arguably we should default to 'Colombo' (the mock default)
-                    # or keep the first available one ensuring we have a single time series
-                    # We will likely have multiple rows per date if we don't filter region.
-                    # Since mock data only has Colombo, this is fine.
-                    # If we had real data, we might raise an error here.
+                    # If specific region not found, maybe just warn? 
+                    # For now, simplistic check.
                     pass
             
             # Ensure proper sorting
             if 'Date' in df.columns:
                 df = df.sort_values('Date')
 
-        # Get the forecast (already float from engine, but safety first)
+        # Get the forecast from engine
+        # Note: forecast_prices now handles feature extraction dynamically
         initial_price = float(engine.forecast_prices(model, df))
         
-        # Generate trend sequence starting from initial_price
-        # Simple projection logic to satisfy "months" requirement visually
-        # (Replace with recursive LSTM loop when feature pipeline supports it)
+        # Generate trend sequence starting from initial_price (Visual Mockup for now)
         dates = []
         prices = []
-        last_date = df['Date'].max()
+        last_date = df['Date'].max() if 'Date' in df.columns else datetime.datetime.now()
         current_price = initial_price
         
         for i in range(1, request.months + 1):
@@ -179,6 +206,7 @@ async def predict(request: PredictRequest):
 
              
         return {
+            "commodity": commodity,
             "region": request.region,
             "grade": request.grade,
             "forecast": {
@@ -186,8 +214,8 @@ async def predict(request: PredictRequest):
                 "prices": prices
             },
             "history": {
-                "dates": df['Date'].dt.strftime("%Y-%m-%d").tail(90).tolist(),
-                "prices": df['Regional_Price'].astype(float).tail(90).tolist()
+                "dates": df['Date'].dt.strftime("%Y-%m-%d").tail(90).tolist() if 'Date' in df.columns else [],
+                "prices": df['Regional_Price'].astype(float).tail(90).tolist() if 'Regional_Price' in df.columns else []
             }
 
         }
@@ -198,6 +226,8 @@ async def predict(request: PredictRequest):
     except Exception as e:
         # Log the full error for debugging
         print(f"Prediction Error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -235,13 +265,13 @@ async def retrain(request: RetrainRequest, background_tasks: BackgroundTasks):
     return {"status": "Training started in background", "epochs": request.epochs}
 
 @app.get("/news")
-async def get_news():
+async def get_news(commodity: str = 'cinnamon'):
     """
     Fetch market intelligence (Sentiment, Confidence, Summary).
     """
     try:
         # In a real app, you might want to cache this result as it includes web scraping
-        result = get_market_intelligence()
+        result = get_market_intelligence(commodity)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -251,4 +281,3 @@ if __name__ == "__main__":
     # Reload=True can cause issues with TensorFlow on Windows
     # We pass the app object directly since reload is False (safe for script execution)
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

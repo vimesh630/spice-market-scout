@@ -23,13 +23,12 @@ logger = logging.getLogger(__name__)
 # Global constants
 SEQUENCE_LENGTH = 12
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(BASE_DIR, 'models', 'lstm_cinnamon')
+# MODEL_DIR removed as global constant, will be dynamic
 
-
-# Global scalers (will be initialized in training)
-scaler_features = MinMaxScaler(feature_range=(0, 1))
-scaler_features = MinMaxScaler(feature_range=(0, 1))
-scaler_target = MinMaxScaler(feature_range=(0, 1))
+# Global scalers - Note: In a production multi-model env, these should not be global 
+# but loaded per request. For this refactor, we'll keep them but reload them on demand.
+scaler_features = None
+scaler_target = None
 label_encoders = {}
 
 def preprocess_data(df):
@@ -180,24 +179,39 @@ def prepare_sequences(df, sequence_length=12, target_col='Regional_Price'):
     Returns:
         tuple: (X_sequences, y_sequences, metadata)
     """
-    feature_cols = [
+    # Dynamic feature selection: Use all numeric columns except target and metadata
+    # This automatically adapts to Clove vs Cinnamon features
+    exclude_cols = [target_col, 'Date', 'Month', 'Year', 'Quarter', 'Region', 'Grade', 'Market_Sentiment', 'Month_num']
+    # But we explicitly want encoded columns and others
+    
+    # Better strategy: Start with known features + lags + rolling
+    # Base numeric features common to most or specific to one
+    potential_base_features = [
         'Grade_encoded', 'Region_encoded', 'Is_Active_Region',
-        'National_Price', 'Seasonal_Impact', 'Local_Production_Volume',
-        'Local_Export_Volume', 'Global_Production_Volume', 'Global_Consumption_Volume',
+        'National_Price', 'Seasonal_Impact', 
+        'Local_Production_Volume', 'Local_Export_Volume', 
+        'Global_Production_Volume', 'Global_Consumption_Volume',
         'Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price',
+        'Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD', # Clove specific
         'Year', 'Month_num', 'Quarter'
     ]
+    
+    feature_cols = [c for c in potential_base_features if c in df.columns]
 
     # Add lag and rolling features if they exist
     lag_cols = [col for col in df.columns if 'lag_' in col or 'rolling_' in col]
     feature_cols.extend(lag_cols)
     
-    # Filter only columns that actually exist in df
-    valid_feature_cols = [col for col in feature_cols if col in df.columns]
+    valid_feature_cols = feature_cols # Already filtered above
+    
+    logger.info(f"Using {len(valid_feature_cols)} features: {valid_feature_cols}")
 
     # Instead of dropping all NaNs, fill them
     df_clean = df.copy()
-    df_clean = df_clean.fillna(method='bfill').fillna(method='ffill')
+    
+    # Fill numeric columns
+    numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
+    df_clean[numeric_cols] = df_clean[numeric_cols].fillna(method='bfill').fillna(method='ffill').fillna(0)
 
     X_sequences, y_sequences, metadata = [], [], []
 
@@ -533,7 +547,6 @@ def save_model(model, history, results, model_dir):
     model.save(model_path)
     logger.info(f"Model saved to {model_path}")
 
-    
     # Save history
     history_path = os.path.join(model_dir, 'history.pkl')
     with open(history_path, 'wb') as f:
@@ -556,21 +569,45 @@ def save_model(model, history, results, model_dir):
     except Exception as e:
         logger.error(f"Failed to save results JSON: {e}")
 
-    # Save scalers
+    # Save scalers - MUST save specific to this model
     with open(os.path.join(model_dir, 'scaler_features.pkl'), 'wb') as f:
         pickle.dump(scaler_features, f)
     with open(os.path.join(model_dir, 'scaler_target.pkl'), 'wb') as f:
         pickle.dump(scaler_target, f)
+    
+    # Save feature list to know what features were used
+    if 'feature_cols' in results:
+         with open(os.path.join(model_dir, 'feature_cols.json'), 'w') as f:
+            json.dump(results['feature_cols'], f)
 
-def train_model(df, use_tuning=True, tuning_method='optuna', n_tuning_trials=20, epochs=100, batch_size=32):
+def train_model(df, commodity='cinnamon', use_tuning=True, tuning_method='optuna', n_tuning_trials=20, epochs=100, batch_size=32):
     """Train the forecasting model with optional hyperparameter tuning"""
     global scaler_features, scaler_target
+    
+    # Re-initialize scalers for new training to avoid contamination
+    scaler_features = MinMaxScaler(feature_range=(0, 1))
+    scaler_target = MinMaxScaler(feature_range=(0, 1))
     
     logger.info("Preparing sequences...")
     X, y, metadata = prepare_sequences(df, SEQUENCE_LENGTH)
 
     if len(X) == 0:
         raise ValueError("No sequences could be created. Check if there's enough data.")
+        
+    # Capture feature columns used (hacky way, should return from prepare_sequences)
+    # We will reconstruct the list used in prepare_sequences to save it
+    potential_base_features = [
+        'Grade_encoded', 'Region_encoded', 'Is_Active_Region',
+        'National_Price', 'Seasonal_Impact', 
+        'Local_Production_Volume', 'Local_Export_Volume', 
+        'Global_Production_Volume', 'Global_Consumption_Volume',
+        'Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price',
+        'Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD',
+        'Year', 'Month_num', 'Quarter'
+    ]
+    feature_cols = [c for c in potential_base_features if c in df.columns]
+    lag_cols = [col for col in df.columns if 'lag_' in col or 'rolling_' in col]
+    feature_cols.extend(lag_cols)
 
     logger.info(f"Created {len(X)} sequences with shape {X.shape}")
 
@@ -659,7 +696,8 @@ def train_model(df, use_tuning=True, tuning_method='optuna', n_tuning_trials=20,
         'tuning_used': use_tuning,
         'epochs_trained': len(history.history['loss']),
         'final_train_loss': history.history['loss'][-1],
-        'final_val_loss': history.history['val_loss'][-1]
+        'final_val_loss': history.history['val_loss'][-1],
+        'feature_cols': feature_cols
     }
     
     # Add tuning results if available
@@ -667,28 +705,30 @@ def train_model(df, use_tuning=True, tuning_method='optuna', n_tuning_trials=20,
         results['tuning_results'] = tuner.tuning_results
     
     # Save everything
-    save_model(model, history, results, MODEL_DIR)
+    model_dir = os.path.join(BASE_DIR, 'models', f'lstm_{commodity}')
+    save_model(model, history, results, model_dir)
     
     return model, history, results
 
-def load_artifacts():
+def load_artifacts(commodity='cinnamon'):
     """Load model and scalers for inference"""
     global scaler_features, scaler_target
     
-    logger.info(f"Loading artifacts from {MODEL_DIR}")
+    model_dir = os.path.join(BASE_DIR, 'models', f'lstm_{commodity}')
+    logger.info(f"Loading artifacts from {model_dir}")
     
     try:
         # Load model
-        model_path = os.path.join(MODEL_DIR, 'lstm_model.keras')
+        model_path = os.path.join(model_dir, 'lstm_model.keras')
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model not found at {model_path}")
         model = load_model(model_path)
 
         
         # Load scalers
-        with open(os.path.join(MODEL_DIR, 'scaler_features.pkl'), 'rb') as f:
+        with open(os.path.join(model_dir, 'scaler_features.pkl'), 'rb') as f:
             scaler_features = pickle.load(f)
-        with open(os.path.join(MODEL_DIR, 'scaler_target.pkl'), 'rb') as f:
+        with open(os.path.join(model_dir, 'scaler_target.pkl'), 'rb') as f:
             scaler_target = pickle.load(f)
             
         logger.info("Artifacts loaded successfully.")
@@ -703,13 +743,19 @@ def forecast_prices(model, df, days_ahead=30):
     Generate future price forecasts using the trained model.
     """
     # Prepare the most recent sequence for prediction
-    feature_cols = [
+    # Dynamic feature selection based on available columns and common logic
+    # In a real system, we should save and load the exact feature list used in training
+    # For now, we reconstruct it similar to prepare_sequences
+    potential_base_features = [
         'Grade_encoded', 'Region_encoded', 'Is_Active_Region',
-        'National_Price', 'Seasonal_Impact', 'Local_Production_Volume',
-        'Local_Export_Volume', 'Global_Production_Volume', 'Global_Consumption_Volume',
+        'National_Price', 'Seasonal_Impact', 
+        'Local_Production_Volume', 'Local_Export_Volume', 
+        'Global_Production_Volume', 'Global_Consumption_Volume',
         'Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price',
+        'Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD',
         'Year', 'Month_num', 'Quarter'
     ]
+    feature_cols = [c for c in potential_base_features if c in df.columns]
     lag_cols = [col for col in df.columns if 'lag_' in col or 'rolling_' in col]
     feature_cols.extend(lag_cols)
     valid_feature_cols = [col for col in feature_cols if col in df.columns]
@@ -751,28 +797,28 @@ def forecast_prices(model, df, days_ahead=30):
 
 
 if __name__ == "__main__":
-    # Example usage with mock data adapter for verification
-    # Since the original complex dataset is likely missing, we adapt the simple mock data
+    # Example usage
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    data_path = os.path.join(base_dir, 'data', 'processed', 'spice_prices.csv')
     
-    if os.path.exists(data_path):
-        print(f"Loading data from {data_path}")
-        # The engine.load_and_prepare_data function handles both wide and long formats now.
-        # We can just use it directly.
-        try:
-            df = load_and_prepare_data(data_path)
-            
-            # Run training
-            print("Running training test...")
-            # We use Fast training for verification, but for real fix we should use reasonable epochs
-            train_model(df, use_tuning=False, epochs=15)
-            print("Training complete.")
-            
-        except Exception as e:
-            print(f"Training failed: {e}")
-            import traceback
-            traceback.print_exc()
+    commodities = ['cinnamon', 'clove']
+    
+    for com in commodities:
+        data_path = os.path.join(base_dir, 'data', 'processed', f'{com}_prices.csv')
+        
+        if os.path.exists(data_path):
+            print(f"--- Training {com.upper()} ---")
+            print(f"Loading data from {data_path}")
+            try:
+                df = load_and_prepare_data(data_path)
+                
+                # Run training
+                train_model(df, commodity=com, use_tuning=False, epochs=15)
+                print(f"{com} training complete.")
+                
+            except Exception as e:
+                print(f"{com} training failed: {e}")
+                import traceback
+                traceback.print_exc()
 
-    else:
-        print(f"Data file not found at {data_path}")
+        else:
+            print(f"Data file not found at {data_path}")
