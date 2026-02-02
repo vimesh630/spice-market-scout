@@ -265,7 +265,7 @@ async def retrain(request: RetrainRequest, background_tasks: BackgroundTasks):
     return {"status": "Training started in background", "epochs": request.epochs}
 
 @app.get("/news")
-async def get_news(commodity: str = 'cinnamon'):
+def get_news(commodity: str = 'cinnamon'):
     """
     Fetch market intelligence (Sentiment, Confidence, Summary).
     """
@@ -280,4 +280,9 @@ async def get_news(commodity: str = 'cinnamon'):
 if __name__ == "__main__":
     # Reload=True can cause issues with TensorFlow on Windows
     # We pass the app object directly since reload is False (safe for script execution)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    except KeyboardInterrupt:
+        print("Server stopped by user.")
+    except Exception as e:
+        print(f"Server error: {e}")

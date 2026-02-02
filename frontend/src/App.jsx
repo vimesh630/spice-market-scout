@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { LayoutDashboard, RefreshCw, AlertCircle, Calendar, Sparkles, TrendingUp, TrendingDown } from 'lucide-react';
+import { LayoutDashboard, RefreshCw, AlertCircle, Calendar, Sparkles, TrendingUp, TrendingDown, Menu, ChevronLeft, ChevronRight } from 'lucide-react';
 import './App.css';
 import logo from './assets/logo.png';
 
@@ -26,6 +26,7 @@ function App() {
 
   const [marketIntel, setMarketIntel] = useState(null);
   const [latestPrice, setLatestPrice] = useState(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // Fetch Metadata and News on Load or Commodity Change
   useEffect(() => {
@@ -41,19 +42,15 @@ function App() {
     const fetchMetadata = async () => {
       try {
         const response = await axios.get(`${API_URL}/metadata?commodity=${selectedCommodity}`);
-
         const fetchedRegions = response.data.regions || [];
         const fetchedGrades = response.data.grades || [];
         const rByG = response.data.regions_by_grade || {};
-
         setRegions(fetchedRegions);
         setGrades(fetchedGrades);
         setRegionsByGrade(rByG);
-
         if (response.data.grades_by_region) {
           setAllGradesCombinations(response.data.grades_by_region);
         }
-
         if (fetchedGrades.length > 0) {
           const initialGrade = fetchedGrades[0];
           setSelectedGrade(initialGrade);
@@ -67,7 +64,6 @@ function App() {
         setError("Could not connect to backend.");
       }
     };
-
     const fetchNews = async () => {
       try {
         const newsRes = await axios.get(`${API_URL}/news?commodity=${selectedCommodity}`);
@@ -76,7 +72,6 @@ function App() {
         console.error("Failed to fetch news:", err);
       }
     };
-
     fetchMetadata();
     fetchNews();
   }, [selectedCommodity]);
@@ -108,30 +103,24 @@ function App() {
 
       const { dates: fDates, prices: fPrices } = response.data.forecast;
       const { dates: hDates, prices: hPrices } = response.data.history || { dates: [], prices: [] };
-
       const historyData = hDates.map((date, index) => ({
         name: date,
         History: hPrices[index],
         Forecast: null
       }));
-
       if (hDates.length > 0 && fDates.length > 0) {
         historyData[historyData.length - 1].Forecast = historyData[historyData.length - 1].History;
       }
-
       const forecastChartData = fDates.map((date, index) => ({
         name: date,
         History: null,
         Forecast: fPrices[index]
       }));
-
       const combinedData = [...historyData, ...forecastChartData];
       setForecastData(combinedData);
-
       const lastForecast = fPrices[fPrices.length - 1];
       const lastHistory = hPrices[hPrices.length - 1];
       setLatestPrice(lastForecast || lastHistory);
-
     } catch (err) {
       console.error("Forecast failed:", err);
       setError("Failed to generate forecast. " + (err.response?.data?.detail || err.message));
@@ -140,42 +129,25 @@ function App() {
     }
   };
 
-  const handleRetrain = async () => {
-    setTrainingStatus(`Training ${selectedCommodity}...`);
-    try {
-      await axios.post(`${API_URL}/retrain`, { epochs: 10 });
-      setTrainingStatus("Training started in background!");
-      setTimeout(() => setTrainingStatus(null), 5000);
-    } catch (err) {
-      setTrainingStatus("Retrain failed.");
-    }
-  };
+
 
   // Theme Colors
   const getThemeColor = () => selectedCommodity === 'clove' ? '#059669' : '#d97706';
 
   return (
-    <div className="app-root">
-      {/* 1. FIXED TOP TICKER */}
-      <MarketTicker
-        commodity={selectedCommodity}
-        grade={selectedGrade}
-        price={latestPrice}
-      />
+    <div className="app-root relative">
+      <MarketTicker commodity={selectedCommodity} grade={selectedGrade} price={latestPrice} />
 
       {/* 2. MAIN LAYOUT - Padding Top for Ticker */}
-      <div className="flex pt-12 text-slate-900 h-screen" style={{ height: '100vh', overflow: 'hidden' }}>
-
+      <div className="flex pt-12 text-slate-900 h-screen relative" style={{ height: '100vh', overflow: 'hidden' }}>
         {/* SIDEBAR */}
-        <aside className="sidebar p-6 bg-white shadow-xl z-40 border-r border-slate-100 flex flex-col w-64 h-full">
-          <div className="brand-container">
-            <img src={logo} alt="Verger Logo" className="h-10 w-auto object-contain" />
-            <span className="brand-name">Verger<br />Naturals</span>
+        <aside className={`sidebar bg-white shadow-xl z-40 border-r border-slate-100 flex flex-col h-full transition-all duration-300 ease-in-out ${isSidebarOpen ? 'w-64 p-6' : 'w-0 p-0 overflow-hidden border-none'}`}>
+          <div className="brand-container justify-center">
+            <img src={logo} alt="Verger Logo" className="h-20 w-auto object-contain" />
           </div>
-
-          <div className="controls space-y-6">
+          <div className="controls space-y-6 flex-1 overflow-y-auto pr-2 custom-scrollbar">
             <div className="control-group">
-              <label>Commodity</label>
+              <label className="block text-sm font-medium mb-1 text-slate-500">Commodity</label>
               <div className="toggle-group">
                 <button
                   className={`toggle-btn ${selectedCommodity === 'cinnamon' ? 'active' : ''}`}
@@ -191,34 +163,45 @@ function App() {
                 </button>
               </div>
             </div>
-
             <div className="control-group">
-              <label>Grade</label>
+              <label className="block text-sm font-medium mb-1 text-slate-500">Grade</label>
               <select value={selectedGrade} onChange={handleGradeChange} className="glass-input">
                 {grades.map(g => <option key={g} value={g}>{g}</option>)}
               </select>
             </div>
-
             <div className="control-group">
-              <label>Region</label>
+              <label className="block text-sm font-medium mb-1 text-slate-500">Region</label>
               <select value={selectedRegion} onChange={handleRegionChange} className="glass-input">
                 {currentRegions.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
             </div>
-
+            <div className="control-group">
+              <label className="block text-sm font-medium mb-1 text-slate-500">Forecast Horizon (Months)</label>
+              <input
+                type="number"
+                min="1"
+                max="24"
+                value={forecastDate}
+                onChange={(e) => setForecastDate(parseInt(e.target.value) || 6)}
+                className="glass-input w-full"
+              />
+            </div>
             <button className="primary-btn" onClick={handleForecast} disabled={loading || !selectedRegion || !selectedGrade}>
               {loading ? 'Processing...' : 'Generate Forecast'}
             </button>
           </div>
 
-          <div style={{ marginTop: 'auto' }}>
-            <div className="h-px bg-slate-200 my-6"></div>
-            <button className="secondary-btn" onClick={handleRetrain}>
-              <RefreshCw size={16} style={{ marginRight: '8px' }} /> Retrain Model
-            </button>
-            {trainingStatus && <div className="status-msg">{trainingStatus}</div>}
-          </div>
         </aside>
+
+
+        {/* TOGGLE BUTTON - Floating Middle Right */}
+        <button
+          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+          className={`absolute top-1/2 z-50 p-2 bg-white border border-slate-200 rounded-full shadow-md text-slate-500 hover:text-orange-600 transition-all duration-300 ease-in-out ${isSidebarOpen ? 'left-56' : 'left-4'}`}
+          style={{ transform: 'translateY(-50%)' }}
+        >
+          {isSidebarOpen ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
+        </button>
 
         {/* MAIN CONTENT */}
         <main className="flex-1 p-8 overflow-y-auto bg-slate-50 relative">
@@ -230,32 +213,29 @@ function App() {
               <Calendar size={18} /> <span>{new Date().toLocaleDateString()}</span>
             </div>
           </header>
-
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-lg flex items-center gap-3 mb-8">
               <AlertCircle size={20} /> {error}
             </div>
           )}
-
           <IntelligenceCard data={marketIntel} />
-
           <div className="grid grid-cols-3 gap-6 mb-8 dashboard-grid">
             <div className="card stripe-gold metric">
-              <h3>Selected Grade</h3>
-              <p className="value">{selectedGrade || '-'}</p>
+              <h3 className="text-slate-500 text-xs font-bold uppercase tracking-widest mb-1">Selected Grade</h3>
+              <p className="value text-2xl font-bold text-slate-900">{selectedGrade || '-'}</p>
             </div>
             <div className="card stripe-green metric">
-              <h3>Latest Price</h3>
-              <p className="value">
+              <h3 className="text-slate-500 text-xs font-bold uppercase tracking-widest mb-1">Latest Price</h3>
+              <p className="value text-2xl font-bold text-slate-900">
                 {forecastData ?
                   `LKR ${Math.round(latestPrice).toLocaleString()}`
                   : '-'}
               </p>
-              <span className="subtext">Estimated current</span>
+              <span className="subtext text-xs text-slate-400">Estimated current</span>
             </div>
             <div className="card stripe-gold metric">
-              <h3>Forecast Trend</h3>
-              <p className="value">
+              <h3 className="text-slate-500 text-xs font-bold uppercase tracking-widest mb-1">Forecast Trend</h3>
+              <div className="value">
                 {forecastData ?
                   (() => {
                     const forecastPoints = forecastData.filter(d => d.Forecast !== null);
@@ -264,17 +244,16 @@ function App() {
                     const end = forecastPoints[forecastPoints.length - 1].Forecast;
                     const diff = end - start;
                     const percent = ((diff / start) * 100).toFixed(1);
-                    return <span style={{ color: diff >= 0 ? '#059669' : '#ef4444', fontSize: '1.4rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    return <span style={{ color: diff >= 0 ? '#059669' : '#ef4444', fontSize: '1.4rem', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold' }}>
                       {diff >= 0 ? <TrendingUp size={24} /> : <TrendingDown size={24} />} {Math.abs(percent)}%
                     </span>;
                   })()
                   : '-'}
-              </p>
+              </div>
             </div>
           </div>
-
           <div className="card chart-card">
-            <h2>Price Forecast</h2>
+            <h2 className="text-lg font-bold text-slate-900 mb-6">Price Forecast</h2>
             <div className="h-96 w-full">
               {forecastData ? (
                 <ResponsiveContainer width="100%" height={400}>
@@ -286,7 +265,6 @@ function App() {
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-
                     <XAxis
                       dataKey="name"
                       stroke="#94a3b8"
@@ -310,7 +288,6 @@ function App() {
                       formatter={(value) => [`LKR ${Math.round(value).toLocaleString()}`]}
                     />
                     <Legend wrapperStyle={{ color: '#0f172a', fontFamily: 'Inter' }} />
-
                     <Area
                       type="monotone"
                       dataKey="History"
@@ -332,23 +309,66 @@ function App() {
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="empty-state">
+                <div className="empty-state flex flex-col items-center justify-center h-full text-slate-400">
                   <LayoutDashboard size={48} />
                   <p className="text-body mt-4">Select parameters and click Generate Forecast</p>
                 </div>
               )}
             </div>
           </div>
+
+
+          {/* FORECAST DATA TABLE */}
+          {forecastData && (
+            <div className="card table-card mt-6">
+              <h2 className="text-lg font-bold text-slate-900 mb-6">Detailed Forecast Data</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm text-slate-600">
+                  <thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs tracking-wider">
+                    <tr>
+                      <th className="px-6 py-3 border-b border-slate-100">Date</th>
+                      <th className="px-6 py-3 border-b border-slate-100">Projected Price (LKR)</th>
+                      <th className="px-6 py-3 border-b border-slate-100">Trend</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {forecastData
+                      .filter(d => d.Forecast !== null)
+                      .map((row, idx, arr) => {
+                        const prevPrice = idx > 0 ? arr[idx - 1].Forecast : (forecastData.findLast(d => d.History !== null)?.History || row.Forecast);
+                        const diff = row.Forecast - prevPrice;
+                        const trendColor = diff >= 0 ? 'text-emerald-600' : 'text-red-500';
+
+                        return (
+                          <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-6 py-4 font-mono text-slate-700">{row.name}</td>
+                            <td className="px-6 py-4 font-bold text-slate-900">LKR {Math.round(row.Forecast).toLocaleString()}</td>
+                            <td className={`px-6 py-4 font-bold ${trendColor}`}>
+                              {diff >= 0 ? '▲' : '▼'} {Math.abs(diff).toFixed(2)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </main>
-      </div>
-    </div>
+      </div >
+    </div >
   );
 }
 
 const MarketTicker = ({ commodity, grade, price }) => {
   // Dynamic items & mocks
   const tickerItems = [
-    { label: `${commodity ? (commodity.charAt(0).toUpperCase() + commodity.slice(1)) : 'Spice'} ${grade || 'Index'}`, value: price ? `LKR ${Math.round(price).toLocaleString()}` : 'Loading...', change: '+0.0%', type: 'neutral' },
+    {
+      label: `${commodity ? (commodity.charAt(0).toUpperCase() + commodity.slice(1)) : 'Spice'} ${grade || 'Index'}`,
+      value: price ? `LKR ${Math.round(price).toLocaleString()}` : 'Loading...',
+      change: '+0.0%',
+      type: 'neutral'
+    },
     { label: 'Cinnamon C5', value: 'LKR 3,250', change: '+2.4%', type: 'positive' },
     { label: 'Clove FAQ', value: 'LKR 1,840', change: '-0.8%', type: 'negative' },
     { label: 'Pepper Black', value: 'LKR 1,120', change: '+1.1%', type: 'positive' },
@@ -357,62 +377,56 @@ const MarketTicker = ({ commodity, grade, price }) => {
 
   return (
     <div className="fixed-ticker">
-      <span className="live-badge">LIVE</span>
-      <div className="ticker-wrapper">
-        {tickerItems.map((item, i) => (
-          <div key={i} className="flex items-center mr-16">
-            <span className="text-emerald-100 font-medium mr-3">{item.label}</span>
-            <span className="font-mono font-bold text-white text-lg mr-3">{item.value}</span>
-            <span className={`font-mono font-bold ${item.type === 'negative' ? 'text-red-300' : 'text-emerald-300'}`}>{item.change}</span>
-          </div>
-        ))}
-        {tickerItems.map((item, i) => (
-          <div key={`dup-${i}`} className="flex items-center mr-16">
-            <span className="text-emerald-100 font-medium mr-3">{item.label}</span>
-            <span className="font-mono font-bold text-white text-lg mr-3">{item.value}</span>
-            <span className={`font-mono font-bold ${item.type === 'negative' ? 'text-red-300' : 'text-emerald-300'}`}>{item.change}</span>
-          </div>
-        ))}
+      <div className="w-full overflow-hidden flex whitespace-nowrap">
+        <div className="flex animate-marquee"> {/* Note: user didn't give marquee css, assuming simple flex for now or rely on external css if it exists. Reusing structure */}
+          <div className="live-badge flex items-center gap-1">● LIVE</div>
+          {tickerItems.map((item, idx) => (
+            <div key={idx} className="flex items-center mx-6 font-mono text-sm">
+              <span className="text-emerald-200 mr-2">{item.label}:</span>
+              <span className="font-bold mr-2">{item.value}</span>
+              <span className={item.type === 'positive' ? 'text-emerald-300' : item.type === 'negative' ? 'text-red-300' : 'text-slate-300'}>
+                {item.change}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
-};
+}
 
 const IntelligenceCard = ({ data }) => {
   if (!data) return (
-    <div className="intelligence-card">
-      <h3 className="flex items-center gap-2 mb-4 font-bold text-xl text-amber-600 font-display">
-        <Sparkles size={20} /> Market Intelligence (Gemini AI)
-      </h3>
-      <div className="flex gap-10">
-        <p className="text-slate-400 italic">Analyzing latest market news...</p>
+    <div className="intelligence-card opacity-50">
+      <div className="flex items-center gap-2 mb-2 text-slate-500 font-bold uppercase text-xs tracking-widest">
+        <Sparkles size={14} /> Market Intelligence
       </div>
+      <div className="h-20 bg-slate-100 rounded animate-pulse"></div>
     </div>
   );
 
   return (
-    <div className="intelligence-card">
-      <h3 className="flex items-center gap-2 mb-4 font-bold text-xl text-amber-600 font-display">
-        <Sparkles size={20} /> Market Intelligence (Gemini AI)
-      </h3>
-      <div className="flex gap-12">
-        <div className="flex flex-col gap-1">
-          <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Sentiment</span>
-          <span className={`text-lg font-bold font-display ${data.sentiment === 'Bullish' ? 'text-emerald-600' : (data.sentiment === 'Bearish' ? 'text-red-500' : 'text-slate-700')}`}>
+    <div className="intelligence-card relative overflow-hidden">
+      <div className="flex gap-8 relative z-10">
+        <div className="w-1/4 border-r border-slate-100 pr-6">
+          <div className="flex items-center gap-2 mb-2 text-slate-500 font-bold uppercase text-xs tracking-widest">
+            Sentiment
+          </div>
+          <div className={`text-3xl font-bold font-heading ${data.sentiment === 'Bullish' ? 'text-emerald-600' : 'text-slate-700'}`}>
             {data.sentiment}
-          </span>
+          </div>
         </div>
-        <div className="flex flex-col gap-1">
-          <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Confidence</span>
-          <span className="text-lg font-bold font-mono text-slate-900">{Math.round((data.confidence || 0) * 100)}%</span>
-        </div>
-        <div className="flex flex-col gap-1 flex-1">
-          <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Summary</span>
-          <span className="text-slate-700 font-medium leading-relaxed">{data.summary || "No summary available."}</span>
+        <div className="w-3/4 pl-2">
+          <div className="flex items-center gap-2 mb-2 text-slate-500 font-bold uppercase text-xs tracking-widest">
+            <Sparkles size={14} className="text-amber-500" /> AI Executive Summary
+          </div>
+          <p className="text-slate-600 leading-relaxed text-sm">
+            {data.summary}
+          </p>
         </div>
       </div>
     </div>
   );
-};
+}
 
 export default App;

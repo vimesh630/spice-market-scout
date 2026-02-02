@@ -1,4 +1,12 @@
-venv/
+# Python
 __pycache__/
+*.py[cod]
+venv/
 .env
-*.csv
+.DS_Store
+
+# React / Node
+node_modules/
+frontend/dist/
+frontend/node_modules/
+.vscode/
