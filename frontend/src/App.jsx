@@ -151,91 +151,101 @@ function App() {
     }
   };
 
-  // Light Theme Colors: Gold (#d97706) vs Green (#059669)
+  // Theme Colors
   const getThemeColor = () => selectedCommodity === 'clove' ? '#059669' : '#d97706';
 
   return (
-    <div className="app-container">
-      <aside className="sidebar">
-        <div className="brand-container">
-          <img src={logo} alt="Verger Logo" className="logo-img" />
-          <span className="brand-name">Verger<br />Naturals</span>
-        </div>
+    <div className="app-root">
+      {/* 1. FIXED TOP TICKER */}
+      <MarketTicker
+        commodity={selectedCommodity}
+        grade={selectedGrade}
+        price={latestPrice}
+      />
 
-        <div className="controls">
-          <div className="control-group">
-            <label>Commodity</label>
-            <div className="toggle-group">
-              <button
-                className={`toggle-btn ${selectedCommodity === 'cinnamon' ? 'active' : ''}`}
-                onClick={() => setSelectedCommodity('cinnamon')}
-              >
-                Cinnamon
-              </button>
-              <button
-                className={`toggle-btn ${selectedCommodity === 'clove' ? 'active' : ''}`}
-                onClick={() => setSelectedCommodity('clove')}
-              >
-                Clove
-              </button>
+      {/* 2. MAIN LAYOUT - Padding Top for Ticker */}
+      <div className="flex pt-12 text-slate-900 h-screen" style={{ height: '100vh', overflow: 'hidden' }}>
+
+        {/* SIDEBAR */}
+        <aside className="sidebar p-6 bg-white shadow-xl z-40 border-r border-slate-100 flex flex-col w-64 h-full">
+          <div className="brand-container">
+            <img src={logo} alt="Verger Logo" className="h-10 w-auto object-contain" />
+            <span className="brand-name">Verger<br />Naturals</span>
+          </div>
+
+          <div className="controls space-y-6">
+            <div className="control-group">
+              <label>Commodity</label>
+              <div className="toggle-group">
+                <button
+                  className={`toggle-btn ${selectedCommodity === 'cinnamon' ? 'active' : ''}`}
+                  onClick={() => setSelectedCommodity('cinnamon')}
+                >
+                  Cinnamon
+                </button>
+                <button
+                  className={`toggle-btn ${selectedCommodity === 'clove' ? 'active' : ''}`}
+                  onClick={() => setSelectedCommodity('clove')}
+                >
+                  Clove
+                </button>
+              </div>
             </div>
+
+            <div className="control-group">
+              <label>Grade</label>
+              <select value={selectedGrade} onChange={handleGradeChange} className="glass-input">
+                {grades.map(g => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </div>
+
+            <div className="control-group">
+              <label>Region</label>
+              <select value={selectedRegion} onChange={handleRegionChange} className="glass-input">
+                {currentRegions.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+
+            <button className="primary-btn" onClick={handleForecast} disabled={loading || !selectedRegion || !selectedGrade}>
+              {loading ? 'Processing...' : 'Generate Forecast'}
+            </button>
           </div>
 
-          <div className="control-group">
-            <label>Grade</label>
-            <select value={selectedGrade} onChange={handleGradeChange} className="glass-input">
-              {grades.map(g => <option key={g} value={g}>{g}</option>)}
-            </select>
+          <div style={{ marginTop: 'auto' }}>
+            <div className="h-px bg-slate-200 my-6"></div>
+            <button className="secondary-btn" onClick={handleRetrain}>
+              <RefreshCw size={16} style={{ marginRight: '8px' }} /> Retrain Model
+            </button>
+            {trainingStatus && <div className="status-msg">{trainingStatus}</div>}
           </div>
+        </aside>
 
-          <div className="control-group">
-            <label>Region</label>
-            <select value={selectedRegion} onChange={handleRegionChange} className="glass-input">
-              {currentRegions.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </div>
-
-          <button className="primary-btn" onClick={handleForecast} disabled={loading || !selectedRegion || !selectedGrade}>
-            {loading ? 'Processing...' : 'Generate Forecast'}
-          </button>
-        </div>
-
-        <div style={{ marginTop: 'auto' }}>
-          <div className="divider"></div>
-          <button className="secondary-btn" onClick={handleRetrain}>
-            <RefreshCw size={16} style={{ marginRight: '8px' }} /> Retrain Model
-          </button>
-          {trainingStatus && <div className="status-msg">{trainingStatus}</div>}
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="main-content">
-        <MarketTicker
-          commodity={selectedCommodity}
-          grade={selectedGrade}
-          price={latestPrice}
-        />
-
-        <div className="content-wrapper">
-          <header>
-            <h1 className="font-heading">{selectedCommodity.charAt(0).toUpperCase() + selectedCommodity.slice(1)} Forecasting</h1>
-            <div className="date-pill">
+        {/* MAIN CONTENT */}
+        <main className="flex-1 p-8 overflow-y-auto bg-slate-50 relative">
+          <header className="flex justify-between items-center mb-10">
+            <h1 className="font-display text-4xl font-bold text-slate-900 tracking-tight">
+              {selectedCommodity.charAt(0).toUpperCase() + selectedCommodity.slice(1)} Forecasting
+            </h1>
+            <div className="bg-white px-4 py-2 rounded-full border border-slate-200 shadow-sm flex items-center gap-3 text-slate-500 font-medium">
               <Calendar size={18} /> <span>{new Date().toLocaleDateString()}</span>
             </div>
           </header>
 
-          {error && <div className="error-banner"><AlertCircle size={18} /> {error}</div>}
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-lg flex items-center gap-3 mb-8">
+              <AlertCircle size={20} /> {error}
+            </div>
+          )}
 
           <IntelligenceCard data={marketIntel} />
 
-          <div className="dashboard-grid">
-            <div className="card metric">
-              <h3 className="text-label">Selected Grade</h3>
+          <div className="grid grid-cols-3 gap-6 mb-8 dashboard-grid">
+            <div className="card stripe-gold metric">
+              <h3>Selected Grade</h3>
               <p className="value">{selectedGrade || '-'}</p>
             </div>
-            <div className="card metric">
-              <h3 className="text-label">Latest Price</h3>
+            <div className="card stripe-green metric">
+              <h3>Latest Price</h3>
               <p className="value">
                 {forecastData ?
                   `LKR ${Math.round(latestPrice).toLocaleString()}`
@@ -243,8 +253,8 @@ function App() {
               </p>
               <span className="subtext">Estimated current</span>
             </div>
-            <div className="card metric">
-              <h3 className="text-label">Forecast Trend</h3>
+            <div className="card stripe-gold metric">
+              <h3>Forecast Trend</h3>
               <p className="value">
                 {forecastData ?
                   (() => {
@@ -264,14 +274,14 @@ function App() {
           </div>
 
           <div className="card chart-card">
-            <h2 className="font-heading">Price Forecast</h2>
-            <div className="chart-container">
+            <h2>Price Forecast</h2>
+            <div className="h-96 w-full">
               {forecastData ? (
                 <ResponsiveContainer width="100%" height={400}>
                   <AreaChart data={forecastData}>
                     <defs>
                       <linearGradient id="colorMain" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={getThemeColor()} stopOpacity={0.6} />
+                        <stop offset="5%" stopColor={getThemeColor()} stopOpacity={0.4} />
                         <stop offset="95%" stopColor={getThemeColor()} stopOpacity={0} />
                       </linearGradient>
                     </defs>
@@ -324,19 +334,19 @@ function App() {
               ) : (
                 <div className="empty-state">
                   <LayoutDashboard size={48} />
-                  <p className="text-body">Select parameters and click Generate Forecast</p>
+                  <p className="text-body mt-4">Select parameters and click Generate Forecast</p>
                 </div>
               )}
             </div>
           </div>
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
 
 const MarketTicker = ({ commodity, grade, price }) => {
-  // Dynamic ticker mocks
+  // Dynamic items & mocks
   const tickerItems = [
     { label: `${commodity ? (commodity.charAt(0).toUpperCase() + commodity.slice(1)) : 'Spice'} ${grade || 'Index'}`, value: price ? `LKR ${Math.round(price).toLocaleString()}` : 'Loading...', change: '+0.0%', type: 'neutral' },
     { label: 'Cinnamon C5', value: 'LKR 3,250', change: '+2.4%', type: 'positive' },
@@ -346,14 +356,21 @@ const MarketTicker = ({ commodity, grade, price }) => {
   ];
 
   return (
-    <div className="market-ticker-container">
+    <div className="fixed-ticker">
+      <span className="live-badge">LIVE</span>
       <div className="ticker-wrapper">
-        <span style={{ fontWeight: 800, color: '#fcd34d', marginRight: '32px', letterSpacing: '1px', fontFamily: 'var(--font-ui)', paddingLeft: '20px' }}>MARKET LIVE</span>
         {tickerItems.map((item, i) => (
-          <div key={i} className="ticker-item">
-            <span className="ticker-label">{item.label}</span>
-            <span className="ticker-value">{item.value}</span>
-            <span className={`ticker-change ${item.type}`}>{item.change}</span>
+          <div key={i} className="flex items-center mr-16">
+            <span className="text-emerald-100 font-medium mr-3">{item.label}</span>
+            <span className="font-mono font-bold text-white text-lg mr-3">{item.value}</span>
+            <span className={`font-mono font-bold ${item.type === 'negative' ? 'text-red-300' : 'text-emerald-300'}`}>{item.change}</span>
+          </div>
+        ))}
+        {tickerItems.map((item, i) => (
+          <div key={`dup-${i}`} className="flex items-center mr-16">
+            <span className="text-emerald-100 font-medium mr-3">{item.label}</span>
+            <span className="font-mono font-bold text-white text-lg mr-3">{item.value}</span>
+            <span className={`font-mono font-bold ${item.type === 'negative' ? 'text-red-300' : 'text-emerald-300'}`}>{item.change}</span>
           </div>
         ))}
       </div>
@@ -364,30 +381,34 @@ const MarketTicker = ({ commodity, grade, price }) => {
 const IntelligenceCard = ({ data }) => {
   if (!data) return (
     <div className="intelligence-card">
-      <h3><Sparkles size={20} color="#d97706" /> Market Intelligence (Gemini AI)</h3>
-      <div className="intel-content">
-        <p className="text-body" style={{ fontStyle: 'italic' }}>Analyzing latest market news...</p>
+      <h3 className="flex items-center gap-2 mb-4 font-bold text-xl text-amber-600 font-display">
+        <Sparkles size={20} /> Market Intelligence (Gemini AI)
+      </h3>
+      <div className="flex gap-10">
+        <p className="text-slate-400 italic">Analyzing latest market news...</p>
       </div>
     </div>
   );
 
   return (
     <div className="intelligence-card">
-      <h3><Sparkles size={20} color="#d97706" /> Market Intelligence (Gemini AI)</h3>
-      <div className="intel-content">
-        <div className="intel-item">
-          <span className="text-label">Sentiment</span>
-          <span className={`value ${data.sentiment === 'Bullish' ? 'positive' : ''}`} style={{ color: data.sentiment === 'Bearish' ? '#ef4444' : (data.sentiment === 'Bullish' ? '#059669' : '#0f172a'), fontFamily: 'var(--font-ui)' }}>
+      <h3 className="flex items-center gap-2 mb-4 font-bold text-xl text-amber-600 font-display">
+        <Sparkles size={20} /> Market Intelligence (Gemini AI)
+      </h3>
+      <div className="flex gap-12">
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Sentiment</span>
+          <span className={`text-lg font-bold font-display ${data.sentiment === 'Bullish' ? 'text-emerald-600' : (data.sentiment === 'Bearish' ? 'text-red-500' : 'text-slate-700')}`}>
             {data.sentiment}
           </span>
         </div>
-        <div className="intel-item">
-          <span className="text-label">Confidence</span>
-          <span className="value">{Math.round((data.confidence || 0) * 100)}%</span>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Confidence</span>
+          <span className="text-lg font-bold font-mono text-slate-900">{Math.round((data.confidence || 0) * 100)}%</span>
         </div>
-        <div className="intel-item" style={{ flex: 2 }}>
-          <span className="text-label">Summary</span>
-          <span className="text-body" style={{ fontWeight: '500', color: '#334155' }}>{data.summary || "No summary available."}</span>
+        <div className="flex flex-col gap-1 flex-1">
+          <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Summary</span>
+          <span className="text-slate-700 font-medium leading-relaxed">{data.summary || "No summary available."}</span>
         </div>
       </div>
     </div>
