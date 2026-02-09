@@ -3,27 +3,59 @@
 @import url('https://fonts.googleapis.com/css2?family=Josefin+Sans:wght@300;400;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 :root {
-  /* Verger Vibrant Hybrid Palette */
+  /* Light Theme (Default) */
   --bg-primary: #f8fafc;
-  /* Slate-50 */
   --bg-card: #ffffff;
-  /* White */
+  --bg-secondary: #f1f5f9;
+  --bg-ticker: #064e3b;
 
   --text-primary: #0f172a;
-  /* Slate-900 */
   --text-secondary: #64748b;
-  /* Slate-500 */
+  --text-muted: #94a3b8;
 
   --accent-gold: #d97706;
   --accent-emerald: #059669;
 
   --border-subtle: #f1f5f9;
-  /* Slate-100 */
+  --border-default: #e2e8f0;
+
+  --scrollbar-track: #f1f5f9;
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-thumb-hover: #94a3b8;
+
+  /* Chart colors */
+  --chart-grid: #f1f5f9;
+  --chart-tooltip-bg: #ffffff;
+  --chart-tooltip-border: #e2e8f0;
 
   /* Fonts */
   --font-heading: 'Josefin Sans', sans-serif;
   --font-body: 'Inter', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
+}
+
+/* Dark Theme */
+.dark {
+  --bg-primary: #0f172a;
+  --bg-card: #1e293b;
+  --bg-secondary: #334155;
+  --bg-ticker: #064e3b;
+
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --border-subtle: #334155;
+  --border-default: #475569;
+
+  --scrollbar-track: #1e293b;
+  --scrollbar-thumb: #475569;
+  --scrollbar-thumb-hover: #64748b;
+
+  /* Chart colors */
+  --chart-grid: #334155;
+  --chart-tooltip-bg: #1e293b;
+  --chart-tooltip-border: #475569;
 }
 
 body {
@@ -44,10 +76,10 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--scrollbar-thumb-hover);
 }

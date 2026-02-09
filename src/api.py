@@ -53,6 +53,12 @@ class PredictRequest(BaseModel):
 class RetrainRequest(BaseModel):
     epochs: int = 10
 
+class CompareRequest(BaseModel):
+    commodity: str = 'cinnamon'
+    grade: str
+    regions: List[str]
+    months: int = 6
+
 @app.on_event("startup")
 async def startup_event():
     """Load model and data on startup"""
@@ -98,8 +104,14 @@ async def get_metadata(commodity: str = 'cinnamon'):
         reverse_map = {}
         
         if 'Region' in df.columns and 'Grade' in df.columns:
-            # Get unique pairs
-            pairs = df[['Region', 'Grade']].drop_duplicates()
+            # Get valid pairs with sufficient history (> 12 months)
+            # Group by Region/Grade and count
+            counts = df.groupby(['Region', 'Grade']).size().reset_index(name='count')
+            valid_pairs = counts[counts['count'] >= 13]
+            
+            print(f"DEBUG: Filtering metadata. Total pairs: {len(counts)}, Valid pairs (>12 months): {len(valid_pairs)}")
+            
+            pairs = valid_pairs[['Region', 'Grade']]
             for _, row in pairs.iterrows():
                 r, g = row['Region'], row['Grade']
                 
@@ -220,7 +232,6 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
 
         }
 
-        
     except HTTPException:
         raise
     except Exception as e:
@@ -231,6 +242,103 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/compare")
+async def compare(request: CompareRequest):
+    """Generate price forecast comparison for multiple regions"""
+    commodity = request.commodity
+    # Load model for specific commodity
+    model = engine.load_artifacts(commodity)
+    if model is None:
+        raise HTTPException(status_code=503, detail=f"Model for {commodity} not found. Please train first.")
+            
+    # Determine data path based on commodity
+    commodity_file = f"{commodity}_prices.csv"
+    current_data_path = os.path.join(BASE_DIR, "data", "processed", commodity_file)
+    
+    if not os.path.exists(current_data_path):
+        raise HTTPException(status_code=404, detail=f"Data file for {commodity} not found")
+
+    try:
+        # Load and preprocess data using engine
+        full_df = engine.load_and_prepare_data(current_data_path)
+        
+        comparison_results = []
+        
+        # Validations
+        if 'Grade' in full_df.columns:
+            valid_grades = full_df['Grade'].unique()
+            if request.grade not in valid_grades:
+                 raise HTTPException(status_code=400, detail=f"Grade {request.grade} not found.")
+        
+        # Iterate through requested regions
+        for region in request.regions:
+            df = full_df.copy()
+            
+            # Filter Logic similar to predict
+            if 'Grade' in df.columns:
+                df = df[df['Grade'] == request.grade]
+            
+            if 'Region' in df.columns:
+                valid_regions = df['Region'].unique()
+                if region not in valid_regions:
+                    print(f"Warning: Region {region} not found in data for {commodity}")
+                    continue # Skip invalid region
+                df = df[df['Region'] == region]
+            
+            if 'Date' in df.columns:
+                df = df.sort_values('Date')
+                
+            if df.empty:
+                continue
+
+            # Generate forecast for this region
+            try:
+                initial_price = float(engine.forecast_prices(model, df))
+                
+                # Generate sequence
+                dates = []
+                prices = []
+                last_date = df['Date'].max() if 'Date' in df.columns else datetime.datetime.now()
+                current_price = initial_price
+                
+                # Simple random walk simulation for demo purposes, seeded by region name length to stay deterministic per region
+                np.random.seed(len(region) + int(initial_price)) 
+                
+                for i in range(1, request.months + 1):
+                     next_date = last_date + datetime.timedelta(days=30 * i)
+                     change = np.random.normal(0, current_price * 0.02)
+                     current_price += float(change)
+                     dates.append(next_date.strftime("%Y-%m-%d"))
+                     prices.append(round(float(current_price), 2))
+                
+                comparison_results.append({
+                    "region": region,
+                    "forecast": {
+                        "dates": dates,
+                        "prices": prices
+                    },
+                    "history": {
+                        "dates": df['Date'].dt.strftime("%Y-%m-%d").tail(90).tolist() if 'Date' in df.columns else [],
+                        "prices": df['Regional_Price'].astype(float).tail(90).tolist() if 'Regional_Price' in df.columns else []
+                    }
+                })
+            except Exception as e:
+                print(f"Error forecasting for {region}: {e}")
+                continue
+
+        return {
+            "commodity": commodity,
+            "grade": request.grade,
+            "results": comparison_results
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Comparison Prediction Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def run_training_task(epochs: int):

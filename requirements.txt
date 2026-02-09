@@ -14,4 +14,6 @@ fastapi
 uvicorn
 pydantic
 fastapi-cors
-
+requests
+beautifulsoup4
+python-dateutil

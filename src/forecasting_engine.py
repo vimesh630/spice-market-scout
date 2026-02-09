@@ -796,6 +796,46 @@ def forecast_prices(model, df, days_ahead=30):
     return float(predicted_price)
 
 
+
+def train_all_models(commodity='cinnamon'):
+    """
+    Train models for the specified commodity.
+    This function is called by the update_data.py script.
+    """
+    logger.info(f"Starting model training (All Models) for {commodity}...")
+    
+    # Construct data path
+    # Assuming data is in data/processed/{commodity}_prices.csv relative to project root
+    # BASE_DIR is c:\Vimesh\spice-market-scout
+    # Data is in c:\Vimesh\data\processed
+    # We need to adjust path from BASE_DIR which is defined as src parent
+    _PROJECT_ROOT = BASE_DIR
+    data_path = os.path.join(_PROJECT_ROOT, 'data', 'processed', f'{commodity}_prices.csv')
+    
+    # Check if data exists
+    if not os.path.exists(data_path):
+        # Fallback for different CWD
+        data_path = os.path.join('data', 'processed', f'{commodity}_prices.csv')
+        
+    if not os.path.exists(data_path):
+        # Allow for absolute path from config if needed, or just error out
+        logger.error(f"Data file not found at {data_path}")
+        return
+        
+    try:
+        # Load and prepare data
+        df = load_and_prepare_data(data_path)
+        
+        # Train model
+        train_model(df, commodity=commodity, use_tuning=True, tuning_method='optuna', n_tuning_trials=10)
+        
+        logger.info(f"Successfully trained models for {commodity}")
+        
+    except Exception as e:
+        logger.error(f"Error training models: {e}")
+        raise e
+
+
 if __name__ == "__main__":
     # Example usage
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
