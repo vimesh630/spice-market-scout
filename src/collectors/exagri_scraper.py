@@ -605,6 +605,179 @@ def fetch_national_price_exagri(
         return scraper.get_national_price(year, month, grade)
 
 
+# ============================================================
+# CLOVE SCRAPER
+# ============================================================
+
+CLOVE_GRADE_MAPPING = {
+    'cloves': 'clove',
+    'clove': 'clove', # some variations
+    'stems': 'stem',
+    'stem': 'stem',
+}
+
+# Use same region mapping as Pepper if possible, but distinct dict to be safe
+# Re-using PEPPER_REGION_MAPPING logic in the class
+
+class CloveExagriScraper:
+    """Scraper for exagri.info clove prices."""
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update(HEADERS)
+        self.cache_dir = Path(CACHE_DIR) / 'exagri_clove'
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._weekly_links_cache = None
+    
+    def get_all_weekly_links(self) -> List[Dict]:
+        """Fetch all weekly price links."""
+        # Reuse logic from Pepper scraper essentially, or cleaner to inherit?
+        # For speed: copy-paste logic
+        if self._weekly_links_cache:
+            return self._weekly_links_cache
+        
+        url = f"{BASE_URL}/index.html"
+        try:
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            print(f"Error fetching index: {e}")
+            return []
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        links = []
+        for anchor in soup.find_all('a', href=True):
+            href = anchor['href']
+            match = re.search(r'(\d{4})/(\d{2})\.(\d{2})\.(\d{4})\.html', href)
+            if match:
+                day = int(match.group(2))
+                month = int(match.group(3))
+                year = int(match.group(4))
+                try:
+                    dt = date(year, month, day)
+                    links.append({
+                        'href': href, 'date': dt, 'year': year, 'month': month, 'day': day
+                    })
+                except ValueError:
+                    continue
+        links.sort(key=lambda x: x['date'], reverse=True)
+        self._weekly_links_cache = links
+        return links
+    
+    def get_weekly_links_for_month(self, year: int, month: int) -> List[Dict]:
+        all_links = self.get_all_weekly_links()
+        return [l for l in all_links if l['year'] == year and l['month'] == month]
+
+    def fetch_weekly_prices(self, href: str) -> Dict[str, float]:
+        """
+        Fetch clove prices.
+        Looking for table with 'Cloves', 'Stems'.
+        """
+        url = f"{BASE_URL}/{href}"
+        try:
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException:
+            return {}
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        prices = {}
+        tables = soup.find_all('table')
+        
+        for table in tables:
+            header_row = table.find('tr')
+            if not header_row: continue
+            
+            headers = [th.get_text(strip=True).lower() for th in header_row.find_all(['th', 'td'])]
+            
+            # Identify Clove table
+            if not any('clove' in h or 'stem' in h for h in headers):
+                continue
+            
+            # Map columns
+            grade_cols = {}
+            for idx, header in enumerate(headers):
+                for grade_name, grade_code in CLOVE_GRADE_MAPPING.items():
+                    if grade_name in header and 'average' in header:
+                         grade_cols[grade_code] = idx
+                         break
+            
+            if not grade_cols: continue
+            
+            # Parse rows
+            for row in table.find_all('tr')[1:]:
+                cells = row.find_all(['td', 'th'])
+                if not cells: continue
+                
+                district = cells[0].get_text(strip=True).lower()
+                district = district.replace('_', ' ').strip()
+                
+                # Map Region
+                region = None
+                # Use Pepper mapping as superset
+                for web_name, our_name in PEPPER_REGION_MAPPING.items():
+                     if web_name.replace('_', ' ') in district or web_name in district.replace(' ', ''):
+                        region = our_name
+                        break
+                
+                if not region: continue
+                
+                for grade, col_idx in grade_cols.items():
+                    if col_idx < len(cells):
+                        price_text = cells[col_idx].get_text(strip=True)
+                        price = self._parse_price(price_text)
+                        if price and price > 0:
+                            prices[f"{region}_{grade}"] = price
+        return prices
+
+    def _parse_price(self, text: str) -> Optional[float]:
+        if not text or text == '-': return None
+        text = re.sub(r'[^\d.]', '', text.replace(',', ''))
+        try: return float(text)
+        except ValueError: return None
+
+    def get_monthly_average_prices(self, year: int, month: int) -> Dict[str, Dict[str, float]]:
+        links = self.get_weekly_links_for_month(year, month)
+        if not links: return {}
+        
+        all_prices = defaultdict(list)
+        for link in links:
+            prices = self.fetch_weekly_prices(link['href'])
+            for k, v in prices.items():
+                all_prices[k].append(v)
+                
+        result = defaultdict(dict)
+        for k, v_list in all_prices.items():
+            r, g = k.split('_', 1)
+            result[r][g] = round(sum(v_list)/len(v_list), 2)
+        return dict(result)
+
+    def get_regional_price(self, year: int, month: int, region: str, grade: str) -> Optional[float]:
+        prices = self.get_monthly_average_prices(year, month)
+        r = region.lower()
+        g = grade.lower()
+        if r in prices: return prices[r].get(g)
+        return None
+
+# Clove singleton
+_clove_scraper: Optional[CloveExagriScraper] = None
+
+def get_clove_scraper() -> CloveExagriScraper:
+    global _clove_scraper
+    if _clove_scraper is None:
+        _clove_scraper = CloveExagriScraper()
+    return _clove_scraper
+
+def get_scraper(commodity: str = 'cinnamon'):
+    """Factory: get the correct scraper for a commodity."""
+    if commodity == 'pepper':
+        return get_pepper_scraper()
+    elif commodity == 'clove':
+        return get_clove_scraper()
+    return get_exagri_scraper()
+
+
+
 if __name__ == "__main__":
     # Test the pepper scraper
     print("=== Pepper Scraper Test ===\n")

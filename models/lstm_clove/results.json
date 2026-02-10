@@ -1,13 +1,23 @@
 {
-    "mae": 116.07958379026319,
-    "rmse": 159.02590454100434,
-    "r2": 0.9763466195975925,
-    "best_params": null,
-    "tuning_method": null,
-    "tuning_used": false,
-    "epochs_trained": 15,
-    "final_train_loss": 0.003495321609079838,
-    "final_val_loss": 0.002077707089483738,
+    "mae": 96.60875215374054,
+    "rmse": 137.06972158349322,
+    "r2": 0.9824272177109988,
+    "best_params": {
+        "units1": 256,
+        "units2": 128,
+        "dropout1": 0.4,
+        "dropout2": 0.1,
+        "dense_units": 64,
+        "learning_rate": 0.001039051992454702,
+        "layer_type": "LSTM",
+        "use_batch_norm": false,
+        "optimizer": "adam"
+    },
+    "tuning_method": "optuna",
+    "tuning_used": true,
+    "epochs_trained": 57,
+    "final_train_loss": 0.0013755689142271876,
+    "final_val_loss": 0.0010371971875429153,
     "feature_cols": [
         "Grade_encoded",
         "Region_encoded",
@@ -57,5 +67,6 @@
         "Rainfall_rolling_3",
         "Rainfall_rolling_6",
         "Rainfall_rolling_12"
-    ]
+    ],
+    "tuning_results": []
 }

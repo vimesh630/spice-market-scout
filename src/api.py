@@ -198,38 +198,14 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
             if 'Date' in df.columns:
                 df = df.sort_values('Date')
 
-        # Get the forecast from engine
-        # Note: forecast_prices now handles feature extraction dynamically
-        initial_price = float(engine.forecast_prices(model, df))
+        # Get the forecast from engine using multistep
+        # Note: forecast_multistep now handles feature extraction dynamically
+        # It yields a tuple of (dates, prices)
         
-        # Safety guard: if model predicts negative/zero, use last known price
-        if initial_price <= 0:
-            # Get last known non-zero price from historical data
-            if 'Regional_Price' in df.columns:
-                valid_prices = df[df['Regional_Price'] > 0]['Regional_Price']
-                if len(valid_prices) > 0:
-                    initial_price = float(valid_prices.iloc[-1])
-                else:
-                    initial_price = 3000.0  # Default fallback
-            else:
-                initial_price = 3000.0  # Default fallback
-            print(f"Warning: Model predicted non-positive price, using fallback: {initial_price}")
+        forecast_dates, forecast_prices = engine.forecast_multistep(model, df, steps=request.months)
         
-        # Generate trend sequence starting from initial_price (Visual Mockup for now)
-        dates = []
-        prices = []
-        last_date = df['Date'].max() if 'Date' in df.columns else datetime.datetime.now()
-        current_price = initial_price
-        
-        for i in range(1, request.months + 1):
-             next_date = last_date + datetime.timedelta(days=30 * i)
-             # Slight random walk + trend
-             change = np.random.normal(0, abs(current_price) * 0.02)  # Use abs() for safety
-             current_price += float(change)
-             # Ensure price stays positive
-             current_price = max(current_price, 100.0)
-             dates.append(next_date.strftime("%Y-%m-%d"))
-             prices.append(round(float(current_price), 2))
+        dates = forecast_dates
+        prices = [round(float(p), 2) for p in forecast_prices]
 
              
         return {
@@ -308,23 +284,11 @@ async def compare(request: CompareRequest):
 
             # Generate forecast for this region
             try:
-                initial_price = float(engine.forecast_prices(model, df))
+                # Use multistep forecast
+                forecast_dates, forecast_prices = engine.forecast_multistep(model, df, steps=request.months)
                 
-                # Generate sequence
-                dates = []
-                prices = []
-                last_date = df['Date'].max() if 'Date' in df.columns else datetime.datetime.now()
-                current_price = initial_price
-                
-                # Simple random walk simulation for demo purposes, seeded by region name length to stay deterministic per region
-                np.random.seed(len(region) + int(initial_price)) 
-                
-                for i in range(1, request.months + 1):
-                     next_date = last_date + datetime.timedelta(days=30 * i)
-                     change = np.random.normal(0, current_price * 0.02)
-                     current_price += float(change)
-                     dates.append(next_date.strftime("%Y-%m-%d"))
-                     prices.append(round(float(current_price), 2))
+                dates = forecast_dates
+                prices = [round(float(p), 2) for p in forecast_prices]
                 
                 comparison_results.append({
                     "region": region,

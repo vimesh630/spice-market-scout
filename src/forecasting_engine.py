@@ -15,6 +15,7 @@ import pickle
 import json
 from itertools import product
 import logging
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -63,10 +64,17 @@ def preprocess_data(df):
                 logger.warning(f"Could not encode {col}: {e}")
 
     # Create additional time-based features
-    if 'Month' in df.columns:
-        df['Year'] = df['Month'].dt.year
-        df['Month_num'] = df['Month'].dt.month
-        df['Quarter'] = df['Month'].dt.quarter
+    # Create additional time-based features
+    if 'Date' in df.columns:
+        df['Year'] = df['Date'].dt.year
+        df['Month_num'] = df['Date'].dt.month
+        df['Quarter'] = df['Date'].dt.quarter
+        
+        # Ensure 'Month' column is treated as Date (legacy support)
+        # If 'Month' exists and is just 1-12, this overwrites it with full Date which is safely what the model expects if it uses 'Month' key.
+        # But to be safe, let's keep Month as is if it's already used as feature, OR overwrite if it's main time index.
+        # The notebook used 'Month' as the time index.
+        df['Month'] = df['Date']
 
     # Create lag features and rolling averages
     # Need to sort by Grade, Region, Month first
@@ -835,6 +843,75 @@ def train_all_models(commodity='cinnamon'):
         logger.error(f"Error training models: {e}")
         raise e
 
+
+def forecast_multistep(model, df, steps=6):
+    """
+    Iteratively forecast future prices by feeding predictions back into the model.
+    """
+    future_dates = []
+    future_prices = []
+    
+    # Work on a copy to avoid side effects
+    current_df = df.copy()
+    
+    # Ensure it's sorted
+    if 'Date' in current_df.columns:
+        current_df = current_df.sort_values('Date')
+        
+    for _ in range(steps):
+        # 1. Predict next step using the existing single-step logic
+        try:
+             # Make sure we use the global scalers that are currently loaded
+             pred_price = forecast_prices(model, current_df)
+        except Exception as e:
+             logger.error(f"Prediction failed at step {_}: {e}")
+             break
+             
+        # 2. Create the next row based on the last known data
+        last_row = current_df.iloc[-1].copy()
+        
+        # Determine next date (assume monthly)
+        if 'Date' in last_row:
+             next_date = last_row['Date'] + pd.Timedelta(days=30)
+        else:
+             next_date = datetime.now() + pd.Timedelta(days=30 * (_ + 1)) # Fallback
+        
+        # Update Date and Price
+        last_row['Date'] = next_date
+        last_row['Regional_Price'] = pred_price
+        
+        # Simple assumptions for future features:
+        # - Copy external factors (Temperature, etc.) from previous month (Naive forecast)
+        # - Assume National Price moves with Regional Price
+        if 'National_Price' in last_row:
+            # Maintain the ratio or difference? Let's assume proportional change or fixed margin?
+            # User code used: last_row['National_Price'] = pred_price * 1.1 
+            # But that might be aggressive if ratio is different.
+            # Let's try to infer ratio from last row
+            ratio = last_row['National_Price'] / last_row['Regional_Price'] if last_row['Regional_Price'] != 0 else 1.1
+            last_row['National_Price'] = pred_price * ratio
+        
+        # Update Time Features
+        if 'Month' in last_row: last_row['Month'] = next_date
+        if 'Year' in last_row: last_row['Year'] = next_date.year
+        if 'Month_num' in last_row: last_row['Month_num'] = next_date.month
+        if 'Quarter' in last_row: last_row['Quarter'] = next_date.quarter
+        
+        # 3. Append new row to history
+        # (We use a DataFrame constructor to avoid FutureWarning)
+        next_row_df = pd.DataFrame([last_row])
+        current_df = pd.concat([current_df, next_row_df], ignore_index=True)
+        
+        # 4. CRITICAL: Re-process to update Rolling Averages and Lags
+        # This ensures the model "sees" the new price in the lag features for the next step
+        # Note: preprocess_data might be slow if df grows large, but for 6-12 steps it's fine.
+        current_df = preprocess_data(current_df)
+        
+        # Store result
+        future_dates.append(next_date.strftime("%Y-%m-%d"))
+        future_prices.append(float(pred_price))
+        
+    return future_dates, future_prices
 
 if __name__ == "__main__":
     # Example usage

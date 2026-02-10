@@ -68,6 +68,18 @@ SEASONAL_MONTHS = [4, 5, 6, 7, 8, 9, 10, 11, 12]
 # Pepper harvest season: typically Feb-May main crop
 PEPPER_SEASONAL_MONTHS = [2, 3, 4, 5]
 
+# === CLOVE GRADES AND REGIONS ===
+CLOVE_GRADES = ['clove', 'stem']
+
+# Clove regions (assuming similar to Pepper/Cinnamon based on "Same regions are repeating")
+# using Pepper regions as they are extensive
+CLOVE_REGIONS = PEPPER_REGIONS
+CLOVE_ACTIVE_REGIONS = PEPPER_ACTIVE_REGIONS
+CLOVE_REGION_COORDINATES = PEPPER_REGION_COORDINATES
+
+# Clove harvest season: Typically Dec-April
+CLOVE_SEASONAL_MONTHS = [12, 1, 2, 3, 4]
+
 # === COMMODITY CONFIGURATION REGISTRY ===
 COMMODITY_CONFIG = {
     'cinnamon': {
@@ -87,6 +99,15 @@ COMMODITY_CONFIG = {
         'seasonal_months': PEPPER_SEASONAL_MONTHS,
         'data_file': 'pepper_prices.csv',
         'exagri_table': 'pepper',
+    },
+    'clove': {
+        'grades': CLOVE_GRADES,
+        'regions': CLOVE_REGIONS,
+        'active_regions': CLOVE_ACTIVE_REGIONS,
+        'coordinates': CLOVE_REGION_COORDINATES,
+        'seasonal_months': CLOVE_SEASONAL_MONTHS,
+        'data_file': 'clove_prices.csv',
+        'exagri_table': 'clove',
     },
 }
 
