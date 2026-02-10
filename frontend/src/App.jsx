@@ -291,7 +291,11 @@ function App() {
   };
 
   // Theme Colors
-  const getThemeColor = () => selectedCommodity === 'clove' ? '#059669' : '#d97706';
+  const getThemeColor = () => {
+    if (selectedCommodity === 'clove') return '#059669';
+    if (selectedCommodity === 'pepper') return '#dc2626'; // Red for Pepper
+    return '#d97706'; // Default Cinnamon Gold
+  };
   // Palette for comparison
   const COLORS = ['#d97706', '#059669', '#2563eb', '#db2777', '#7c3aed', '#0891b2'];
 
@@ -350,6 +354,13 @@ function App() {
                   onClick={() => setSelectedCommodity('clove')}
                 >
                   Clove
+                </button>
+                <button
+                  className={`toggle-btn ${selectedCommodity === 'pepper' ? 'active' : ''}`}
+                  style={{ color: selectedCommodity === 'pepper' ? 'var(--accent-gold)' : 'var(--text-secondary)' }}
+                  onClick={() => setSelectedCommodity('pepper')}
+                >
+                  Pepper
                 </button>
               </div>
             </div>

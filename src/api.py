@@ -202,6 +202,19 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
         # Note: forecast_prices now handles feature extraction dynamically
         initial_price = float(engine.forecast_prices(model, df))
         
+        # Safety guard: if model predicts negative/zero, use last known price
+        if initial_price <= 0:
+            # Get last known non-zero price from historical data
+            if 'Regional_Price' in df.columns:
+                valid_prices = df[df['Regional_Price'] > 0]['Regional_Price']
+                if len(valid_prices) > 0:
+                    initial_price = float(valid_prices.iloc[-1])
+                else:
+                    initial_price = 3000.0  # Default fallback
+            else:
+                initial_price = 3000.0  # Default fallback
+            print(f"Warning: Model predicted non-positive price, using fallback: {initial_price}")
+        
         # Generate trend sequence starting from initial_price (Visual Mockup for now)
         dates = []
         prices = []
@@ -211,8 +224,10 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
         for i in range(1, request.months + 1):
              next_date = last_date + datetime.timedelta(days=30 * i)
              # Slight random walk + trend
-             change = np.random.normal(0, current_price * 0.02)
+             change = np.random.normal(0, abs(current_price) * 0.02)  # Use abs() for safety
              current_price += float(change)
+             # Ensure price stays positive
+             current_price = max(current_price, 100.0)
              dates.append(next_date.strftime("%Y-%m-%d"))
              prices.append(round(float(current_price), 2))
 

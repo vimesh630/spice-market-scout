@@ -12,7 +12,7 @@ from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Optional, Tuple
 import logging
 
-from config import PROCESSED_DATA_DIR, CINNAMON_GRADES, REGIONS
+from config import PROCESSED_DATA_DIR, CINNAMON_GRADES, REGIONS, get_commodity_config
 from collectors.static_data import (
     get_grades, get_regions, is_active_region, get_seasonal_impact
 )
@@ -41,7 +41,8 @@ class DataPipeline:
             commodity: Commodity name (default: 'cinnamon')
         """
         self.commodity = commodity
-        self.price_collector = get_price_collector()
+        self.config = get_commodity_config(commodity)
+        self.price_collector = get_price_collector(commodity)
         
         # Ensure price cache is populated from existing dataset
         self.price_collector.import_from_existing_dataset(commodity)
@@ -68,8 +69,8 @@ class DataPipeline:
         fuel_price = fetch_fuel_price(year, month)
         logger.info(f"  CBSL data: {cbsl_data}, Fuel: {fuel_price}")
         
-        # 3. Get seasonal impact
-        seasonal_impact = get_seasonal_impact(month)
+        # 3. Get seasonal impact (commodity-aware)
+        seasonal_impact = get_seasonal_impact(month, self.commodity)
         
         # 4. Create date
         month_date = date(year, month, 1)
@@ -77,42 +78,57 @@ class DataPipeline:
         # 5. Collect data for each grade-region combination
         rows = []
         
-        for grade in get_grades():
-            for region in get_regions():
+        for grade in get_grades(self.commodity):
+            for region in get_regions(self.commodity):
                 # Get weather for this region
                 try:
-                    weather = fetch_monthly_weather(region, year, month)
+                    weather = fetch_monthly_weather(region, year, month, commodity=self.commodity)
                 except Exception as e:
                     logger.warning(f"Weather fetch failed for {region}: {e}")
                     weather = {'temperature': 27.0, 'rainfall': 150.0}
                 
-                # Get prices
+                # Get prices (always force refresh to avoid stale cache)
                 regional_price = self.price_collector.get_price(
-                    year, month, grade, region, 'regional'
-                )
-                national_price = self.price_collector.get_price(
-                    year, month, grade, region, 'national'
+                    year, month, grade, region, 'regional', force_refresh=True
                 )
                 
+                # Build row — common fields across all commodities
                 row = {
                     'Date': month_date.strftime('%Y-%m-%d'),
                     'Grade': grade,
                     'Region': region,
-                    'Is_Active_Region': is_active_region(region),
-                    'Regional_Price': regional_price if regional_price else 0.0,
-                    'National_Price': national_price if national_price else 0.0,
+                    'Regional_Price': regional_price if regional_price else None,
                     'Seasonal_Impact': seasonal_impact,
-                    'Local_Production_Volume': production['local_production_volume'],
-                    'Local_Export_Volume': production['local_export_volume'],
-                    'Global_Production_Volume': production['global_production_volume'],
-                    'Global_Consumption_Volume': production['global_consumption_volume'],
                     'Temperature': weather['temperature'],
                     'Rainfall': weather['rainfall'],
                     'Exchange_Rate': cbsl_data['exchange_rate'],
                     'Inflation_Rate': cbsl_data['inflation_rate'],
                     'Fuel_Price': fuel_price,
-                    'Market_Sentiment': 'Neutral'
                 }
+                
+                # Cinnamon-specific fields
+                if self.commodity == 'cinnamon':
+                    national_price = self.price_collector.get_price(
+                        year, month, grade, region, 'national', force_refresh=True
+                    )
+                    row.update({
+                        'Is_Active_Region': is_active_region(region, self.commodity),
+                        'National_Price': national_price if national_price else None,
+                        'Local_Production_Volume': production['local_production_volume'],
+                        'Local_Export_Volume': production['local_export_volume'],
+                        'Global_Production_Volume': production['global_production_volume'],
+                        'Global_Consumption_Volume': production['global_consumption_volume'],
+                        'Market_Sentiment': 'Neutral',
+                    })
+                
+                # Pepper-specific fields
+                elif self.commodity == 'pepper':
+                    # Vietnam_Harvest_Flag: Feb-May harvest season
+                    vietnam_harvest = 1 if month in [2, 3, 4, 5] else 0
+                    row.update({
+                        'Vietnam_Harvest_Flag': vietnam_harvest,
+                    })
+                
                 rows.append(row)
         
         df = pd.DataFrame(rows)
@@ -201,6 +217,22 @@ class DataPipeline:
             # Combine and sort
             combined = pd.concat([existing, df], ignore_index=True)
             combined = combined.sort_values(['Region', 'Grade', 'Date'])
+            
+            # Forward-fill missing/zero prices within each Grade/Region group
+            for col in ['Regional_Price', 'National_Price']:
+                if col in combined.columns:
+                    # Replace 0 and NaN with forward-filled values
+                    combined[col] = combined[col].replace(0, pd.NA)
+                    combined[col] = combined.groupby(['Region', 'Grade'])[col].transform(
+                        lambda x: x.ffill()
+                    )
+                    # Fill any remaining NaN (e.g. group starts with NaN)
+                    combined[col] = combined[col].fillna(method='bfill').fillna(3000.0)
+            
+            zero_count = (combined['Regional_Price'] == 0).sum() if 'Regional_Price' in combined.columns else 0
+            if zero_count > 0:
+                logger.warning(f"  {zero_count} zero prices remain after forward-fill")
+            
             combined.to_csv(filepath, index=False)
             logger.info(f"Updated dataset saved to {filepath} ({len(combined)} total rows)")
         else:

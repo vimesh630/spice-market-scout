@@ -18,24 +18,27 @@ from datetime import date, datetime
 from typing import Dict, Optional, List, Tuple
 from pathlib import Path
 
-from config import EXAGRI_URL, CACHE_DIR, DATA_DIR
-from collectors.exagri_scraper import get_exagri_scraper
+from config import EXAGRI_URL, CACHE_DIR, DATA_DIR, get_commodity_config
+from collectors.exagri_scraper import get_exagri_scraper, get_scraper, fetch_regional_price_exagri, fetch_national_price_exagri
 
 
 class PriceCollector:
     """
-    Collects cinnamon prices from exagri.info or cached data.
+    Collects spice prices from exagri.info or cached data.
+    Supports multiple commodities via the commodity parameter.
     """
     
-    def __init__(self):
+    def __init__(self, commodity: str = 'cinnamon'):
+        self.commodity = commodity
         self.price_cache: Dict[str, Dict] = {}
         self._load_cache()
     
     def _get_cache_path(self) -> Path:
-        """Get path to price cache file."""
+        """Get path to price cache file (per-commodity)."""
         cache_dir = Path(CACHE_DIR)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / 'price_cache.json'
+        filename = f'price_cache_{self.commodity}.json' if self.commodity != 'cinnamon' else 'price_cache.json'
+        return cache_dir / filename
     
     def _load_cache(self) -> None:
         """Load price cache from disk."""
@@ -67,20 +70,12 @@ class PriceCollector:
         Returns number of prices found.
         """
         try:
-            scraper = get_exagri_scraper()
+            scraper = get_scraper(self.commodity)
             prices = scraper.get_monthly_average_prices(year, month)
             
             count = 0
             for region, grades in prices.items():
                 for grade, price in grades.items():
-                    # Calculate national price (average of this grade across all regions)
-                    # This is an approximation as we strictly only have the regional price here
-                    # But for now we treat national price as same or explicitly fetch it later
-                    # Actually get_monthly_average_prices returns structure {region: {grade: price}}
-                    
-                    # We need national price. Let's calculate it from the scraper data
-                    # (This is handled implicitly if we just cache what we have)
-                    
                     # Create/Update cache entry
                     key = self._make_key(year, month, grade, region)
                     
@@ -108,7 +103,8 @@ class PriceCollector:
         month: int, 
         grade: str, 
         region: str,
-        price_type: str = 'regional'
+        price_type: str = 'regional',
+        force_refresh: bool = False
     ) -> Optional[float]:
         """
         Get price for a specific grade, region, and month.
@@ -119,48 +115,63 @@ class PriceCollector:
             grade: Cinnamon grade (e.g., 'c4', 'alba')
             region: Region name
             price_type: 'regional' or 'national'
+            force_refresh: If True, skip cache and re-fetch from scraper
             
         Returns:
             Price in LKR, or None if not available
         """
         key = self._make_key(year, month, grade.lower(), region.lower())
         
-        # Check cache
-        if key in self.price_cache:
+        # Check cache (unless force_refresh)
+        if not force_refresh and key in self.price_cache:
             data = self.price_cache[key]
             return data.get(f'{price_type}_price')
         
-        # If not in cache, try to fetch the whole month from scraper
-        # But only do this once per month/request to avoid spamming
-        # We can implement a simple in-memory check or just try
-        print(f"Cache miss for {key}, fetching from scraper...")
+        # Fetch from scraper
+        if force_refresh:
+            print(f"Force refreshing {key} from scraper...")
+        else:
+            print(f"Cache miss for {key}, fetching from scraper...")
+        
         if self._fetch_month_from_scraper(year, month) > 0:
             # Try getting from cache again
             if key in self.price_cache:
                 data = self.price_cache[key]
                 return data.get(f'{price_type}_price')
         
+        # Fallback to individual fetch if bulk fetch failed or didn't contain our key
+        # (This is legacy support, mostly unnecessary if bulk fetch works)
+        if price_type == 'regional':
+             price = fetch_regional_price_exagri(
+                region, grade, year, month, commodity=self.commodity
+            )
+        else:
+             price = fetch_national_price_exagri(
+                grade, year, month, commodity=self.commodity
+            )
+            
+        if price:
+             # Cache this individual result
+             existing = self.price_cache.get(key, {})
+             existing[f'{price_type}_price'] = price
+             existing['updated_at'] = datetime.now().isoformat()
+             self.price_cache[key] = existing
+             self._save_cache()
+             return price
+
         return None
     
     def set_price(
         self,
         year: int,
         month: int, 
-        grade: str,
+        grade: str, 
         region: str,
         regional_price: float,
         national_price: float
     ) -> None:
         """
         Manually set price data for a specific grade/region/month.
-        
-        Args:
-            year: Year
-            month: Month
-            grade: Cinnamon grade
-            region: Region name
-            regional_price: Regional price in LKR
-            national_price: National average price in LKR
         """
         key = self._make_key(year, month, grade.lower(), region.lower())
         self.price_cache[key] = {
@@ -173,14 +184,6 @@ class PriceCollector:
     def import_from_csv(self, filepath: str) -> int:
         """
         Import price data from a CSV file.
-        
-        Expected CSV columns: Date, Grade, Region, Regional_Price, National_Price
-        
-        Args:
-            filepath: Path to CSV file
-            
-        Returns:
-            Number of records imported
         """
         count = 0
         try:
@@ -207,18 +210,17 @@ class PriceCollector:
             
         return count
     
-    def import_from_existing_dataset(self, commodity: str = 'cinnamon') -> int:
+    def import_from_existing_dataset(self, commodity: str) -> int:
         """
         Import price data from the existing processed dataset.
         This bootstraps the cache with historical data.
-        
-        Args:
-            commodity: Commodity name (default: 'cinnamon')
-            
-        Returns:
-            Number of records imported
         """
-        dataset_path = Path(DATA_DIR) / 'processed' / f'{commodity}_prices.csv'
+        # Ensure we use the commodity passed, or self.commodity
+        if not commodity:
+            commodity = self.commodity
+            
+        config = get_commodity_config(commodity)
+        dataset_path = Path(DATA_DIR) / 'processed' / config['data_file']
         
         if not dataset_path.exists():
             print(f"Dataset not found: {dataset_path}")
@@ -231,13 +233,17 @@ class PriceCollector:
                 for row in reader:
                     try:
                         dt = datetime.strptime(row['Date'], '%Y-%m-%d')
+                        regional_price = float(row['Regional_Price'])
+                        # National_Price may not exist (e.g., pepper dataset)
+                        national_price_str = row.get('National_Price', '')
+                        national_price = float(national_price_str) if national_price_str else regional_price
                         self.set_price(
                             year=dt.year,
                             month=dt.month,
                             grade=row['Grade'],
                             region=row['Region'],
-                            regional_price=float(row['Regional_Price']),
-                            national_price=float(row['National_Price'])
+                            regional_price=regional_price,
+                            national_price=national_price
                         )
                         count += 1
                     except (KeyError, ValueError) as e:
@@ -250,83 +256,15 @@ class PriceCollector:
         return count
 
 
-def fetch_regional_price(
-    region: str, 
-    grade: str, 
-    year: int, 
-    month: int
-) -> Optional[float]:
-    """
-    Fetch regional price for a grade/region/month.
-    
-    Args:
-        region: Region name
-        grade: Cinnamon grade
-        year: Year
-        month: Month
-        
-    Returns:
-        Price in LKR, or None if not available
-    """
-    collector = PriceCollector()
-    return collector.get_price(year, month, grade, region, 'regional')
-
-
-def fetch_national_price(
-    grade: str, 
-    year: int, 
-    month: int
-) -> Optional[float]:
-    """
-    Fetch national average price for a grade/month.
-    Uses 'colombo' as the reference for national prices.
-    
-    Args:
-        grade: Cinnamon grade
-        year: Year
-        month: Month
-        
-    Returns:
-        Price in LKR, or None if not available
-    """
-    collector = PriceCollector()
-    # National price is same across regions, use colombo as reference
-    return collector.get_price(year, month, grade, 'colombo', 'national')
-
-
 # Singleton instance
-_price_collector: Optional[PriceCollector] = None
+_collector: Optional[PriceCollector] = None
 
 
-def get_price_collector() -> PriceCollector:
-    """Get the singleton PriceCollector instance."""
-    global _price_collector
-    if _price_collector is None:
-        _price_collector = PriceCollector()
-    return _price_collector
-
-
-if __name__ == "__main__":
-    # Test and bootstrap the price collector
-    print("=== Price Collector Test ===\n")
-    
-    collector = get_price_collector()
-    
-    # Try to import from existing dataset
-    print("Importing from existing dataset...")
-    count = collector.import_from_existing_dataset('cinnamon')
-    print(f"Imported {count} records\n")
-    
-    # Test getting a price
-    test_cases = [
-        (2025, 9, 'c4', 'colombo'),
-        (2024, 6, 'alba', 'galle'),
-        (2023, 1, 'h1', 'matara'),
-    ]
-    
-    for year, month, grade, region in test_cases:
-        regional = collector.get_price(year, month, grade, region, 'regional')
-        national = collector.get_price(year, month, grade, region, 'national')
-        print(f"{year}-{month:02d} {grade} ({region}):")
-        print(f"  Regional: Rs. {regional}")
-        print(f"  National: Rs. {national}")
+def get_price_collector(commodity: str = 'cinnamon') -> PriceCollector:
+    """Get the singleton price collector instance."""
+    global _collector
+    # If collector logic needs to change based on commodity, we might need a dict of collectors
+    # For now, let's assume we re-instantiate if commodity changes or just keep one active
+    if _collector is None or _collector.commodity != commodity:
+        _collector = PriceCollector(commodity)
+    return _collector
