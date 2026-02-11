@@ -34,11 +34,13 @@ def fetch_weather_data(
         ValueError: If region is not found in coordinates
         requests.RequestException: If API request fails
     """
-    region_lower = region.lower()
-    if region_lower not in REGION_COORDINATES:
+
+    # Use Title Case for lookup as per new config standard
+    region_title = region.title()
+    if region_title not in REGION_COORDINATES:
         raise ValueError(f"Unknown region: {region}. Available: {list(REGION_COORDINATES.keys())}")
     
-    lat, lon = REGION_COORDINATES[region_lower]
+    lat, lon = REGION_COORDINATES[region_title]
     
     params = {
         'latitude': lat,

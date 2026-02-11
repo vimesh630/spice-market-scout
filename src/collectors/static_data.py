@@ -44,7 +44,8 @@ def is_active_region(region: str, commodity: str = 'cinnamon') -> int:
     Check if a region is an active producing region for a commodity.
     """
     config = get_commodity_config(commodity)
-    return config['active_regions'].get(region.lower(), 0)
+    # config keys are now Title Case for all commodities
+    return config['active_regions'].get(region.title(), 0)
 
 
 def get_seasonal_impact(month: int, commodity: str = 'cinnamon') -> int:

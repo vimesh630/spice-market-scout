@@ -62,6 +62,7 @@ class PriceCollector:
     
     def _make_key(self, year: int, month: int, grade: str, region: str) -> str:
         """Create cache key."""
+        # Use exact casing provided (which should match config/dataset now)
         return f"{year}-{month:02d}_{grade}_{region}"
     
     def _fetch_month_from_scraper(self, year: int, month: int) -> int:
@@ -119,8 +120,9 @@ class PriceCollector:
             
         Returns:
             Price in LKR, or None if not available
+            Price in LKR, or None if not available
         """
-        key = self._make_key(year, month, grade.lower(), region.lower())
+        key = self._make_key(year, month, grade, region)
         
         # Check cache (unless force_refresh)
         if not force_refresh and key in self.price_cache:
@@ -173,7 +175,7 @@ class PriceCollector:
         """
         Manually set price data for a specific grade/region/month.
         """
-        key = self._make_key(year, month, grade.lower(), region.lower())
+        key = self._make_key(year, month, grade, region)
         self.price_cache[key] = {
             'regional_price': regional_price,
             'national_price': national_price,

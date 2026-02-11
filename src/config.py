@@ -7,69 +7,71 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 # === CINNAMON GRADES AND REGIONS ===
-CINNAMON_GRADES = ['alba', 'c4', 'c5', 'c5sp', 'h1', 'h2', 'h_faq']
+CINNAMON_GRADES = ['Alba', 'C5SP', 'C5', 'C4', 'H1', 'H2', 'H FAQ']
 
-REGIONS = ['colombo', 'galle', 'hambantota', 'kalutara', 'kandy', 'kurunegala', 'matara', 'ratnapura']
+REGIONS = ['Colombo', 'Galle', 'Hambantota', 'Kalutara', 'Kandy', 'Kurunegala', 'Matara', 'Ratnapura']
 
 ACTIVE_REGIONS = {
-    'colombo': 1,
-    'galle': 1,
-    'hambantota': 1,
-    'kandy': 0,
-    'kurunegala': 0,
-    'matara': 1,
-    'ratnapura': 1,
-    'kalutara': 1,
+    'Colombo': 1,
+    'Galle': 1,
+    'Hambantota': 1,
+    'Kandy': 0,
+    'Kurunegala': 0,
+    'Matara': 1,
+    'Ratnapura': 1,
+    'Kalutara': 1,
 }
 
 # Approximate coordinates for Sri Lankan cinnamon-producing regions
 REGION_COORDINATES: Dict[str, tuple] = {
-    'colombo': (6.9271, 79.8612),
-    'galle': (6.0535, 80.2210),
-    'hambantota': (6.1241, 81.1185),
-    'kandy': (7.2906, 80.6337),
-    'kurunegala': (7.4863, 80.3647),
-    'matara': (5.9549, 80.5550),
-    'ratnapura': (6.6828, 80.3992),
-    'kalutara': (6.5854, 79.9607),
+    'Colombo': (6.9271, 79.8612),
+    'Galle': (6.0535, 80.2210),
+    'Hambantota': (6.1241, 81.1185),
+    'Kandy': (7.2906, 80.6337),
+    'Kurunegala': (7.4863, 80.3647),
+    'Matara': (5.9549, 80.5550),
+    'Ratnapura': (6.6828, 80.3992),
+    'Kalutara': (6.5854, 79.9607),
 }
 
 # === PEPPER GRADES AND REGIONS ===
-PEPPER_GRADES = ['gr1', 'white']
+# === PEPPER GRADES AND REGIONS ===
+PEPPER_GRADES = ['GR1', 'White']
 
 PEPPER_REGIONS = [
-    'badulla', 'colombo', 'galle', 'gampaha', 'hambantota', 'kalutara',
-    'kandy', 'kegalle', 'kurunegala', 'matale', 'matara', 'monaragala',
-    'nuwaraeliya', 'ratnapura'
+    'Badulla', 'Colombo', 'Galle', 'Gampaha', 'Hambantota', 'Kalutara',
+    'Kandy', 'Kegalle', 'Kurunegala', 'Matale', 'Matara', 'Monaragala',
+    'Nuwaraeliya', 'Ratnapura'
 ]
 
 PEPPER_ACTIVE_REGIONS = {r: 1 for r in PEPPER_REGIONS}
 
 PEPPER_REGION_COORDINATES: Dict[str, tuple] = {
-    'badulla': (6.9934, 81.0550),
-    'colombo': (6.9271, 79.8612),
-    'galle': (6.0535, 80.2210),
-    'gampaha': (7.0840, 80.0098),
-    'hambantota': (6.1241, 81.1185),
-    'kalutara': (6.5854, 79.9607),
-    'kandy': (7.2906, 80.6337),
-    'kegalle': (7.2513, 80.3464),
-    'kurunegala': (7.4863, 80.3647),
-    'matale': (7.4675, 80.6234),
-    'matara': (5.9549, 80.5550),
-    'monaragala': (6.8728, 81.3507),
-    'nuwaraeliya': (6.9497, 80.7891),
-    'ratnapura': (6.6828, 80.3992),
+    'Badulla': (6.9934, 81.0550),
+    'Colombo': (6.9271, 79.8612),
+    'Galle': (6.0535, 80.2210),
+    'Gampaha': (7.0840, 80.0098),
+    'Hambantota': (6.1241, 81.1185),
+    'Kalutara': (6.5854, 79.9607),
+    'Kandy': (7.2906, 80.6337),
+    'Kegalle': (7.2513, 80.3464),
+    'Kurunegala': (7.4863, 80.3647),
+    'Matale': (7.4675, 80.6234),
+    'Matara': (5.9549, 80.5550),
+    'Monaragala': (6.8728, 81.3507),
+    'Nuwaraeliya': (6.9497, 80.7891),
+    'Ratnapura': (6.6828, 80.3992),
 }
 
 # === SEASONAL MONTHS ===
 # April to December are harvest/active season months (cinnamon)
+# Maintain lowercase for Cinnamon as per dataset check
 SEASONAL_MONTHS = [4, 5, 6, 7, 8, 9, 10, 11, 12]
 # Pepper harvest season: typically Feb-May main crop
 PEPPER_SEASONAL_MONTHS = [2, 3, 4, 5]
 
 # === CLOVE GRADES AND REGIONS ===
-CLOVE_GRADES = ['clove', 'stem']
+CLOVE_GRADES = ['Clove', 'Stem']
 
 # Clove regions (assuming similar to Pepper/Cinnamon based on "Same regions are repeating")
 # using Pepper regions as they are extensive

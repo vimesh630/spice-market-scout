@@ -31,18 +31,20 @@ def ingest_pepper_data():
         # Ensure Date is datetime
         df['Date'] = pd.to_datetime(df['Date'])
         
-        # Standardize Grade names if needed (e.g. 'GR1' to 'gr1')
-        # Based on config, we expect lower case 'gr1', 'white' etc usually, 
-        # but let's check what's in the file.
-        # Analysis showed: Grade: ['GR1' 'White']
-        # Config has: PEPPER_GRADES = ['gr1', 'white']
-        
-        df['Grade'] = df['Grade'].str.lower()
+        # Standardize Grade names
+        # Map to config casing: GR1, White
+        def normalize_grade(g):
+            g = str(g).strip()
+            if g.lower().replace('-', '') == 'gr1': return 'GR1'
+            if g.lower().replace('-', '') == 'gr2': return 'GR2'
+            return g.title() # White -> White
+            
+        df['Grade'] = df['Grade'].apply(normalize_grade)
         
         # Standardize Region names
         # Analysis showed: Region: ['Kandy' 'Matale' 'Nuwaraeliya' ... ]
-        # Config has lower case generally.
-        df['Region'] = df['Region'].str.lower()
+        # Config expects Title Case
+        df['Region'] = df['Region'].str.title()
         
         # Handle 'Regional_Price' formatting/cleanup if strings exist?
         # Analysis showed float64 so it should be fine.
@@ -50,6 +52,8 @@ def ingest_pepper_data():
         # Ensure 'Is_Active_Region' exists. If not, map from config.
         active_regions = config['active_regions']
         if 'Is_Active_Region' not in df.columns:
+            # Config active_regions keys are now Title Case (Badulla)
+            # df['Region'] is now Title Case. Match should work.
             df['Is_Active_Region'] = df['Region'].map(lambda x: active_regions.get(x, 0))
             
         # Ensure other required columns for the pipeline/model exist

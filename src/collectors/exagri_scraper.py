@@ -32,30 +32,31 @@ HEADERS = {
 
 # Grade mapping from website names to our dataset names
 GRADE_MAPPING = {
-    'alba': 'alba',
-    'c-5 sp': 'c5sp',
-    'c-5': 'c5',
-    'c-4': 'c4',
-    'm-5': 'h1',  # M-5 maps to H1
-    'm-4': 'h2',  # M-4 maps to H2
-    'h-1': 'h1',
-    'h-2': 'h2',
-    'h-faq': 'h_faq',
-    'h faq': 'h_faq',
-    'faq': 'h_faq',
+    'alba': 'Alba',
+    'c-5 sp': 'C5SP',
+    'c-5': 'C5',
+    'c-4': 'C4',
+    'm-5': 'H1',  # M-5 maps to H1
+    'm-4': 'H2',  # M-4 maps to H2
+    'h-1': 'H1',
+    'h-2': 'H2',
+    'h-faq': 'H FAQ',
+    'h faq': 'H FAQ',
+    'faq': 'H FAQ',
 }
 
 # Region mapping from website names to our dataset names
+# Region mapping from website names to our dataset names
 REGION_MAPPING = {
-    'colombo': 'colombo',
-    'galle': 'galle',
-    'matara': 'matara',
-    'hambantota': 'hambantota',
-    'ratnapura': 'ratnapura',  # Sometimes included
-    'kurunegala': 'kurunegala',
-    'kandy': 'kandy',
-    'badulla': 'badulla',
-    'kalutara': 'kalutara',
+    'colombo': 'Colombo',
+    'galle': 'Galle',
+    'matara': 'Matara',
+    'hambantota': 'Hambantota',
+    'ratnapura': 'Ratnapura',  # Sometimes included
+    'kurunegala': 'Kurunegala',
+    'kandy': 'Kandy',
+    'badulla': 'Badulla',
+    'kalutara': 'Kalutara',
 }
 
 
@@ -259,6 +260,8 @@ class ExagriPriceScraper:
         result = defaultdict(dict)
         for key, price_list in all_prices.items():
             region, grade = key.split('_', 1)  # Split on first _ only (grades like h_faq contain _)
+            # Map back to new casing if needed, but scraper already outputs mapped values in keys
+            # The keys are constructed as f"{region}_{grade}" where region/grade come from MAPPING
             avg_price = sum(price_list) / len(price_list)
             result[region][grade] = round(avg_price, 2)
         
@@ -285,11 +288,12 @@ class ExagriPriceScraper:
         """
         monthly_prices = self.get_monthly_average_prices(year, month)
         
-        region_lower = region.lower()
-        grade_lower = grade.lower()
-        
-        if region_lower in monthly_prices:
-            return monthly_prices[region_lower].get(grade_lower)
+        # Case-insensitive lookup
+        for r_key, grades_dict in monthly_prices.items():
+            if r_key.lower() == region.lower():
+                for g_key, price in grades_dict.items():
+                    if g_key.lower() == grade.lower():
+                        return price
         
         return None
     
@@ -316,8 +320,9 @@ class ExagriPriceScraper:
         prices = []
         
         for region, grades in monthly_prices.items():
-            if grade_lower in grades:
-                prices.append(grades[grade_lower])
+            for g_key, price in grades.items():
+                if g_key.lower() == grade.lower():
+                    prices.append(price)
         
         if prices:
             return round(sum(prices) / len(prices), 2)
@@ -343,28 +348,28 @@ def get_exagri_scraper() -> ExagriPriceScraper:
 
 # Pepper grade mapping from website names to dataset names
 PEPPER_GRADE_MAPPING = {
-    'gr-1': 'gr1',
-    'gr-2': 'gr2',
-    'white': 'white',
+    'gr-1': 'GR1',
+    'gr-2': 'GR2',
+    'white': 'White',
 }
 
 # Pepper region mapping from website names to dataset names
 PEPPER_REGION_MAPPING = {
-    'kandy': 'kandy',
-    'matale': 'matale',
-    'nuwara_eliya': 'nuwaraeliya',
-    'nuwaraeliya': 'nuwaraeliya',
-    'kegalle': 'kegalle',
-    'ratnapura': 'ratnapura',
-    'badulla': 'badulla',
-    'kurunegala': 'kurunegala',
-    'monaragala': 'monaragala',
-    'colombo': 'colombo',
-    'galle': 'galle',
-    'gampaha': 'gampaha',
-    'hambantota': 'hambantota',
-    'kalutara': 'kalutara',
-    'matara': 'matara',
+    'kandy': 'Kandy',
+    'matale': 'Matale',
+    'nuwara_eliya': 'Nuwaraeliya',
+    'nuwaraeliya': 'Nuwaraeliya',
+    'kegalle': 'Kegalle',
+    'ratnapura': 'Ratnapura',
+    'badulla': 'Badulla',
+    'kurunegala': 'Kurunegala',
+    'monaragala': 'Monaragala',
+    'colombo': 'Colombo',
+    'galle': 'Galle',
+    'gampaha': 'Gampaha',
+    'hambantota': 'Hambantota',
+    'kalutara': 'Kalutara',
+    'matara': 'Matara',
 }
 
 
@@ -542,11 +547,20 @@ class PepperExagriScraper:
     ) -> Optional[float]:
         """Get regional pepper price for a specific month/region/grade."""
         monthly_prices = self.get_monthly_average_prices(year, month)
-        region_lower = region.lower()
-        grade_lower = grade.lower()
         
-        if region_lower in monthly_prices:
-            return monthly_prices[region_lower].get(grade_lower)
+        # Case-insensitive lookup for region
+        target_region = None
+        for r_key in monthly_prices.keys():
+            if r_key.lower() == region.lower():
+                target_region = r_key
+                break
+        
+        if target_region:
+            grades = monthly_prices[target_region]
+            # Case-insensitive lookup for grade
+            for g_key, price in grades.items():
+                if g_key.lower() == grade.lower():
+                    return price
         return None
 
 
@@ -592,11 +606,11 @@ def fetch_national_price_exagri(
         # Pepper scraper doesn't have national price concept yet
         scraper = get_pepper_scraper()
         monthly_prices = scraper.get_monthly_average_prices(year, month)
-        grade_lower = grade.lower()
         prices = []
         for region, grades in monthly_prices.items():
-            if grade_lower in grades:
-                prices.append(grades[grade_lower])
+            for g_key, price in grades.items():
+                if g_key.lower() == grade.lower():
+                    prices.append(price)
         if prices:
             return round(sum(prices) / len(prices), 2)
         return None
@@ -610,10 +624,10 @@ def fetch_national_price_exagri(
 # ============================================================
 
 CLOVE_GRADE_MAPPING = {
-    'cloves': 'clove',
-    'clove': 'clove', # some variations
-    'stems': 'stem',
-    'stem': 'stem',
+    'cloves': 'Clove',
+    'clove': 'Clove', # some variations
+    'stems': 'Stem',
+    'stem': 'Stem',
 }
 
 # Use same region mapping as Pepper if possible, but distinct dict to be safe
@@ -754,9 +768,12 @@ class CloveExagriScraper:
 
     def get_regional_price(self, year: int, month: int, region: str, grade: str) -> Optional[float]:
         prices = self.get_monthly_average_prices(year, month)
-        r = region.lower()
-        g = grade.lower()
-        if r in prices: return prices[r].get(g)
+        # Case-insensitive lookup
+        for r_key, grades in prices.items():
+            if r_key.lower() == region.lower():
+                for g_key, price in grades.items():
+                    if g_key.lower() == grade.lower():
+                        return price
         return None
 
 # Clove singleton

@@ -81,8 +81,8 @@ def update_clove_data():
                                 'Date': current,
                                 'Year': current.year,
                                 'Month': current.month, # Number
-                                'Region': region,
-                                'Grade': grade,
+                                'Region': region.title(), # Enforce Title Case
+                                'Grade': grade.title(),   # Enforce Title Case
                                 'Regional_Price': price,
                                 'National_Price': price, # Placeholder/Proxy
                             }
