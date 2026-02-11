@@ -32,11 +32,11 @@ scaler_features = None
 scaler_target = None
 label_encoders = {}
 
-def preprocess_data(df):
+def preprocess_data(df, training_mode=True):
     """
-    Apply feature engineering, encoding and handling missing values.
+    Apply feature engineering with strict encoder handling.
     """
-    logger.info("Preprocessing data...")
+    logger.info(f"Preprocessing data (training_mode={training_mode})...")
     
     # Convert 'Date' column to datetime objects if not already
     if 'Date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['Date']):
@@ -56,14 +56,20 @@ def preprocess_data(df):
         if col in df.columns:
             if col not in label_encoders:
                 label_encoders[col] = LabelEncoder()
-            # Handle unknown values in future/inference by extending fit? For now, fit_transform or transform
-            # For simplicity in this script, we fit_transform. In production, load saved encoders.
-            try:
+            
+            if training_mode:
+                # TRAIN: Fit and transform
                 df[f'{col}_encoded'] = label_encoders[col].fit_transform(df[col].astype(str))
-            except Exception as e:
-                logger.warning(f"Could not encode {col}: {e}")
+            else:
+                # INFERENCE: Transform only (handle unseen labels gracefully-ish)
+                # If the encoder isn't fitted, we can't transform. Should not happen if trained.
+                try:
+                    df[f'{col}_encoded'] = label_encoders[col].transform(df[col].astype(str))
+                except ValueError:
+                    # Fallback for unseen labels: assign -1 or 0
+                    logger.warning(f"Unseen label encountered in {col} during inference. Assigning 0.")
+                    df[f'{col}_encoded'] = 0 
 
-    # Create additional time-based features
     # Create additional time-based features
     if 'Date' in df.columns:
         df['Year'] = df['Date'].dt.year
@@ -582,6 +588,10 @@ def save_model(model, history, results, model_dir):
         pickle.dump(scaler_features, f)
     with open(os.path.join(model_dir, 'scaler_target.pkl'), 'wb') as f:
         pickle.dump(scaler_target, f)
+        
+    # Save Label Encoders
+    with open(os.path.join(model_dir, 'label_encoders.pkl'), 'wb') as f:
+        pickle.dump(label_encoders, f)
     
     # Save feature list to know what features were used
     if 'feature_cols' in results:
@@ -739,6 +749,14 @@ def load_artifacts(commodity='cinnamon'):
         with open(os.path.join(model_dir, 'scaler_target.pkl'), 'rb') as f:
             scaler_target = pickle.load(f)
             
+        # --- NEW: Load Encoders ---
+        encoder_path = os.path.join(model_dir, 'label_encoders.pkl')
+        if os.path.exists(encoder_path):
+            with open(encoder_path, 'rb') as f:
+                label_encoders = pickle.load(f)
+        else:
+            logger.warning("Label encoders not found! Inference may be inaccurate.")
+            
         logger.info("Artifacts loaded successfully.")
         return model
     except Exception as e:
@@ -846,28 +864,32 @@ def train_all_models(commodity='cinnamon'):
 
 def forecast_multistep(model, df, steps=6):
     """
-    Iteratively forecast future prices by feeding predictions back into the model.
+    Iteratively forecast with safeguards against exponential explosions.
     """
     future_dates = []
     future_prices = []
     
-    # Work on a copy to avoid side effects
+    # Work on a copy
     current_df = df.copy()
-    
-    # Ensure it's sorted
     if 'Date' in current_df.columns:
         current_df = current_df.sort_values('Date')
         
     for _ in range(steps):
-        # 1. Predict next step using the existing single-step logic
         try:
-             # Make sure we use the global scalers that are currently loaded
+             # 1. Predict
              pred_price = forecast_prices(model, current_df)
+             
+             # SAFEGUARD 1: CLAMPING
+             # Don't allow price to move more than 15% in a single month
+             last_known_price = current_df.iloc[-1]['Regional_Price']
+             max_change = last_known_price * 0.15
+             pred_price = np.clip(pred_price, last_known_price - max_change, last_known_price + max_change)
+             
         except Exception as e:
              logger.error(f"Prediction failed at step {_}: {e}")
              break
              
-        # 2. Create the next row based on the last known data
+        # 2. Prepare next row
         last_row = current_df.iloc[-1].copy()
         
         # Determine next date (assume monthly)
@@ -876,33 +898,28 @@ def forecast_multistep(model, df, steps=6):
         else:
              next_date = datetime.now() + pd.Timedelta(days=30 * (_ + 1)) # Fallback
         
-        # Update Date and Price
+        # Update Target
         last_row['Date'] = next_date
         last_row['Regional_Price'] = pred_price
         
-        # Simple assumptions for future features:
-        # - Copy external factors (Temperature, etc.) from previous month (Naive forecast)
-        # - Assume National Price moves with Regional Price
+        # SAFEGUARD 2: PRESERVE SPREAD (Don't multiply!)
+        # Instead of multiplying by 1.1, keep the same gap as the previous month
         if 'National_Price' in last_row:
-            last_row['National_Price'] = pred_price * 1.1
+            spread = last_row['National_Price'] - current_df.iloc[-1]['Regional_Price']
+            last_row['National_Price'] = pred_price + spread
         
-        # Update Time Features
+        # Update Dates
         if 'Month' in last_row: last_row['Month'] = next_date
         if 'Year' in last_row: last_row['Year'] = next_date.year
         if 'Month_num' in last_row: last_row['Month_num'] = next_date.month
         if 'Quarter' in last_row: last_row['Quarter'] = next_date.quarter
         
-        # 3. Append new row to history
-        # (We use a DataFrame constructor to avoid FutureWarning)
+        # 3. Append and Re-process
         next_row_df = pd.DataFrame([last_row])
         current_df = pd.concat([current_df, next_row_df], ignore_index=True)
+        # 4. CRITICAL: Re-process to update Rolling Averages and Lags with training_mode=False
+        current_df = preprocess_data(current_df, training_mode=False)
         
-        # 4. CRITICAL: Re-process to update Rolling Averages and Lags
-        # This ensures the model "sees" the new price in the lag features for the next step
-        # Note: preprocess_data might be slow if df grows large, but for 6-12 steps it's fine.
-        current_df = preprocess_data(current_df)
-        
-        # Store result
         future_dates.append(next_date.strftime("%Y-%m-%d"))
         future_prices.append(float(pred_price))
         

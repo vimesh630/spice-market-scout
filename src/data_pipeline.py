@@ -239,11 +239,28 @@ class DataPipeline:
             if zero_count > 0:
                 logger.warning(f"  {zero_count} zero prices remain after forward-fill")
             
-            combined.to_csv(filepath, index=False)
-            logger.info(f"Updated dataset saved to {filepath} ({len(combined)} total rows)")
+            import time
+            max_retries = 5
+            for i in range(max_retries):
+                try:
+                    combined.to_csv(filepath, index=False)
+                    logger.info(f"Updated dataset saved to {filepath} ({len(combined)} total rows)")
+                    break
+                except PermissionError:
+                    if i < max_retries - 1:
+                        wait = 2 ** i
+                        logger.warning(f"Permission denied saving {filepath}. logic retrying in {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        logger.error(f"Failed to save {filepath} after {max_retries} attempts. Is the file open?")
+                        raise
         else:
-            df.to_csv(filepath, index=False)
-            logger.info(f"Dataset saved to {filepath} ({len(df)} rows)")
+            try:
+                df.to_csv(filepath, index=False)
+                logger.info(f"Dataset saved to {filepath} ({len(df)} rows)")
+            except PermissionError:
+                 logger.error(f"Permission denied saving {filepath}. Is the file open?")
+                 raise
         
         return filepath
     

@@ -4993,5 +4993,110 @@
     "regional_price": 2930.0,
     "national_price": 2930.0,
     "updated_at": "2026-02-10T12:44:18.009960"
+  },
+  "2026-02_GR1_Kandy": {
+    "regional_price": 1997.0,
+    "national_price": 1997.0,
+    "updated_at": "2026-02-11T15:23:41.035471"
+  },
+  "2026-02_GR2_Kandy": {
+    "regional_price": 1700.0,
+    "national_price": 1700.0,
+    "updated_at": "2026-02-11T15:23:41.035496"
+  },
+  "2026-02_White_Kandy": {
+    "regional_price": 2810.5,
+    "national_price": 2810.5,
+    "updated_at": "2026-02-11T15:23:41.035508"
+  },
+  "2026-02_GR1_Matale": {
+    "regional_price": 2011.5,
+    "national_price": 2011.5,
+    "updated_at": "2026-02-11T15:23:41.035521"
+  },
+  "2026-02_White_Matale": {
+    "regional_price": 2998.0,
+    "national_price": 2998.0,
+    "updated_at": "2026-02-11T15:23:41.035533"
+  },
+  "2026-02_GR1_Nuwaraeliya": {
+    "regional_price": 1968.5,
+    "national_price": 1968.5,
+    "updated_at": "2026-02-11T15:23:41.035545"
+  },
+  "2026-02_GR1_Kegalle": {
+    "regional_price": 1999.5,
+    "national_price": 1999.5,
+    "updated_at": "2026-02-11T15:23:41.035558"
+  },
+  "2026-02_White_Kegalle": {
+    "regional_price": 2600.0,
+    "national_price": 2600.0,
+    "updated_at": "2026-02-11T15:23:41.035569"
+  },
+  "2026-02_GR1_Ratnapura": {
+    "regional_price": 1990.0,
+    "national_price": 1990.0,
+    "updated_at": "2026-02-11T15:23:41.035581"
+  },
+  "2026-02_GR2_Ratnapura": {
+    "regional_price": 1920.0,
+    "national_price": 1920.0,
+    "updated_at": "2026-02-11T15:23:41.035592"
+  },
+  "2026-02_GR1_Badulla": {
+    "regional_price": 2013.0,
+    "national_price": 2013.0,
+    "updated_at": "2026-02-11T15:23:41.035604"
+  },
+  "2026-02_White_Badulla": {
+    "regional_price": 2583.0,
+    "national_price": 2583.0,
+    "updated_at": "2026-02-11T15:23:41.035616"
+  },
+  "2026-02_GR1_Kurunegala": {
+    "regional_price": 2000.0,
+    "national_price": 2000.0,
+    "updated_at": "2026-02-11T15:23:41.035628"
+  },
+  "2026-02_GR1_Colombo": {
+    "regional_price": 1844.0,
+    "national_price": 1844.0,
+    "updated_at": "2026-02-11T15:23:41.035641"
+  },
+  "2026-02_GR1_Gampaha": {
+    "regional_price": 1987.5,
+    "national_price": 1987.5,
+    "updated_at": "2026-02-11T15:23:41.035653"
+  },
+  "2026-02_GR1_Kalutara": {
+    "regional_price": 1955.0,
+    "national_price": 1955.0,
+    "updated_at": "2026-02-11T15:23:41.035664"
+  },
+  "2026-02_GR1_Galle": {
+    "regional_price": 1950.0,
+    "national_price": 1950.0,
+    "updated_at": "2026-02-11T15:23:41.035676"
+  },
+  "2026-02_GR1_Matara": {
+    "regional_price": 1980.5,
+    "national_price": 1980.5,
+    "updated_at": "2026-02-11T15:23:41.035688"
+  },
+  "2026-02_GR1_Hambantota": {
+    "regional_price": 1991.5,
+    "national_price": 1991.5,
+    "updated_at": "2026-02-11T15:23:41.035699"
+  },
+  "2026-02_GR1_Monaragala": {
+    "regional_price": 2010.0,
+    "national_price": 2010.0,
+    "updated_at": "2026-02-11T15:23:41.035711"
+  },
+  "2026-02_White_Monaragala": {
+    "regional_price": 2920.0,
+    "national_price": 2920.0,
+    "updated_at": "2026-02-11T15:23:41.035721"
   }
 }

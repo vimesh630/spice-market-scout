@@ -98,6 +98,18 @@ Examples:
     print(f"Dry run: {args.dry_run}")
     print()
     
+    # Fail-fast check: Ensure target file is writable
+    from config import PROCESSED_DATA_DIR
+    target_file = os.path.join(PROCESSED_DATA_DIR, f'{args.commodity}_prices.csv')
+    if os.path.exists(target_file):
+        try:
+            with open(target_file, 'a'):
+                pass
+        except PermissionError:
+            print(f"ERROR: Permission denied for {target_file}.")
+            print("Please close any applications using this file (e.g., Excel, api.py) and try again.")
+            return 1
+
     # Run the pipeline
     try:
         df = run_pipeline(
