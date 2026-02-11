@@ -884,12 +884,7 @@ def forecast_multistep(model, df, steps=6):
         # - Copy external factors (Temperature, etc.) from previous month (Naive forecast)
         # - Assume National Price moves with Regional Price
         if 'National_Price' in last_row:
-            # Maintain the ratio or difference? Let's assume proportional change or fixed margin?
-            # User code used: last_row['National_Price'] = pred_price * 1.1 
-            # But that might be aggressive if ratio is different.
-            # Let's try to infer ratio from last row
-            ratio = last_row['National_Price'] / last_row['Regional_Price'] if last_row['Regional_Price'] != 0 else 1.1
-            last_row['National_Price'] = pred_price * ratio
+            last_row['National_Price'] = pred_price * 1.1
         
         # Update Time Features
         if 'Month' in last_row: last_row['Month'] = next_date
