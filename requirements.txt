@@ -17,3 +17,4 @@ fastapi-cors
 requests
 beautifulsoup4
 python-dateutil
+playwright

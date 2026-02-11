@@ -10,6 +10,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
+from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -60,15 +61,45 @@ REGION_MAPPING = {
 }
 
 
-class ExagriPriceScraper:
+class BaseExagriScraper:
+    """Base class handling Playwright browser session."""
+    
+    def __init__(self, cache_subdir: str):
+        self.playwright = sync_playwright().start()
+        # Headless=True is default, but explicit is good.
+        self.browser = self.playwright.chromium.launch(headless=True)
+        self.context = self.browser.new_context(
+            user_agent=HEADERS['User-Agent']
+        )
+        self.page = self.context.new_page()
+        
+        self.cache_dir = Path(CACHE_DIR) / cache_subdir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._weekly_links_cache = None
+
+    def close(self):
+        self.context.close()
+        self.browser.close()
+        self.playwright.stop()
+
+    def _fetch_content(self, url: str) -> str:
+        """Fetch page content using Playwright."""
+        try:
+            print(f"Navigating to {url}...")
+            self.page.goto(url, timeout=60000, wait_until='domcontentloaded')
+            # Small wait to ensure dynamic content loads (if any) or just to be safe
+            self.page.wait_for_timeout(2000)
+            return self.page.content()
+        except Exception as e:
+            print(f"Error fetching {url}: {e}")
+            return ""
+
+
+class ExagriPriceScraper(BaseExagriScraper):
     """Scraper for exagri.info spice prices."""
     
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-        self.cache_dir = Path(CACHE_DIR) / 'exagri'
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._weekly_links_cache = None
+        super().__init__('exagri')
     
     def get_all_weekly_links(self) -> List[Dict]:
         """
@@ -81,14 +112,11 @@ class ExagriPriceScraper:
             return self._weekly_links_cache
         
         url = f"{BASE_URL}/index.html"
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as e:
-            print(f"Error fetching index: {e}")
+        content = self._fetch_content(url)
+        if not content:
             return []
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        soup = BeautifulSoup(content, 'html.parser')
         links = []
         
         for anchor in soup.find_all('a', href=True):
@@ -148,14 +176,11 @@ class ExagriPriceScraper:
         """
         url = f"{BASE_URL}/{href}"
         
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as e:
-            print(f"Error fetching {url}: {e}")
+        content = self._fetch_content(url)
+        if not content:
             return {}
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        soup = BeautifulSoup(content, 'html.parser')
         prices = {}
         
         # Find all tables and look for cinnamon prices
@@ -373,15 +398,11 @@ PEPPER_REGION_MAPPING = {
 }
 
 
-class PepperExagriScraper:
+class PepperExagriScraper(BaseExagriScraper):
     """Scraper for exagri.info pepper prices (Table 0)."""
     
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-        self.cache_dir = Path(CACHE_DIR) / 'exagri_pepper'
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._weekly_links_cache = None
+        super().__init__('exagri_pepper')
     
     def get_all_weekly_links(self) -> List[Dict]:
         """Fetch all weekly price links from the index page."""
@@ -389,14 +410,11 @@ class PepperExagriScraper:
             return self._weekly_links_cache
         
         url = f"{BASE_URL}/index.html"
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as e:
-            print(f"Error fetching index: {e}")
+        content = self._fetch_content(url)
+        if not content:
             return []
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        soup = BeautifulSoup(content, 'html.parser')
         links = []
         
         for anchor in soup.find_all('a', href=True):
@@ -438,14 +456,11 @@ class PepperExagriScraper:
         """
         url = f"{BASE_URL}/{href}"
         
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as e:
-            print(f"Error fetching {url}: {e}")
+        content = self._fetch_content(url)
+        if not content:
             return {}
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        soup = BeautifulSoup(content, 'html.parser')
         prices = {}
         
         tables = soup.find_all('table')
@@ -633,15 +648,11 @@ CLOVE_GRADE_MAPPING = {
 # Use same region mapping as Pepper if possible, but distinct dict to be safe
 # Re-using PEPPER_REGION_MAPPING logic in the class
 
-class CloveExagriScraper:
+class CloveExagriScraper(BaseExagriScraper):
     """Scraper for exagri.info clove prices."""
     
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-        self.cache_dir = Path(CACHE_DIR) / 'exagri_clove'
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._weekly_links_cache = None
+        super().__init__('exagri_clove')
     
     def get_all_weekly_links(self) -> List[Dict]:
         """Fetch all weekly price links."""
@@ -651,14 +662,11 @@ class CloveExagriScraper:
             return self._weekly_links_cache
         
         url = f"{BASE_URL}/index.html"
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as e:
-            print(f"Error fetching index: {e}")
+        content = self._fetch_content(url)
+        if not content:
             return []
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        soup = BeautifulSoup(content, 'html.parser')
         links = []
         for anchor in soup.find_all('a', href=True):
             href = anchor['href']
@@ -688,13 +696,11 @@ class CloveExagriScraper:
         Looking for table with 'Cloves', 'Stems'.
         """
         url = f"{BASE_URL}/{href}"
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException:
+        content = self._fetch_content(url)
+        if not content:
             return {}
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        soup = BeautifulSoup(content, 'html.parser')
         prices = {}
         tables = soup.find_all('table')
         

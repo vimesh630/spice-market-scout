@@ -219,15 +219,21 @@ class DataPipeline:
             combined = combined.sort_values(['Region', 'Grade', 'Date'])
             
             # Forward-fill missing/zero prices within each Grade/Region group
+            # Use Time-Series Interpolation for better accuracy
+            combined['Date'] = pd.to_datetime(combined['Date'])
+            combined.set_index('Date', inplace=True)
+            
             for col in ['Regional_Price', 'National_Price']:
                 if col in combined.columns:
                     # Replace 0 and NaN with forward-filled values
                     combined[col] = combined[col].replace(0, pd.NA)
                     combined[col] = combined.groupby(['Region', 'Grade'])[col].transform(
-                        lambda x: x.ffill()
+                        lambda x: x.interpolate(method='time', limit_direction='both')
                     )
-                    # Fill any remaining NaN (e.g. group starts with NaN)
+                    # Fill any remaining NaN (e.g. if time interpolation fails or single point)
                     combined[col] = combined[col].fillna(method='bfill').fillna(3000.0)
+
+            combined.reset_index(inplace=True)
             
             zero_count = (combined['Regional_Price'] == 0).sum() if 'Regional_Price' in combined.columns else 0
             if zero_count > 0:
