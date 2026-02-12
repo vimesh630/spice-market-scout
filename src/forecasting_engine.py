@@ -136,15 +136,14 @@ def load_and_prepare_data(data_path):
         # Clean Grade names
         df_melted['Grade'] = df_melted['Grade'].apply(lambda x: x.replace('Cinnamon_Grade_', ''))
         
-        # Add dummy mock features required by model
-        np.random.seed(42) # For reproducibility
+        # Add dummy features required by model (STATIC DEFAULTS - NO RANDOMNESS)
         df_melted['Region'] = 'Colombo' # Default region
         df_melted['Is_Active_Region'] = 1
         
-        # Mock National Price
-        df_melted['National_Price'] = df_melted['Regional_Price'] * 1.1 + np.random.normal(0, 50, len(df_melted))
+        # Impute National Price: Fixed 10% spread if missing
+        df_melted['National_Price'] = df_melted['Regional_Price'] * 1.1
         
-        # Add random dummy values for external factors
+        # Add static default values for external factors (mean imputation equivalent)
         external_features = [
             'Seasonal_Impact', 'Local_Production_Volume', 'Local_Export_Volume', 
             'Global_Production_Volume', 'Global_Consumption_Volume', 'Temperature', 
@@ -152,7 +151,7 @@ def load_and_prepare_data(data_path):
         ]
         
         for col in external_features:
-            df_melted[col] = np.random.uniform(10, 100, size=len(df_melted))
+            df_melted[col] = 0.0 # Placeholder: Use 0 or mean, but valid float
             
         df = df_melted
 
@@ -160,12 +159,11 @@ def load_and_prepare_data(data_path):
         logger.info("Detected long schema. Enriching with derived features...")
         # Already long format, but likely needs enrichment of external features if missing
         
-        np.random.seed(42)
         if 'Is_Active_Region' not in df.columns:
             df['Is_Active_Region'] = 1
         
         if 'National_Price' not in df.columns:
-             df['National_Price'] = df['Regional_Price'] * 1.1 + np.random.normal(0, 50, len(df))
+             df['National_Price'] = df['Regional_Price'] * 1.1
              
         external_features = [
             'Seasonal_Impact', 'Local_Production_Volume', 'Local_Export_Volume', 
@@ -175,7 +173,7 @@ def load_and_prepare_data(data_path):
         
         for col in external_features:
             if col not in df.columns:
-                df[col] = np.random.uniform(10, 100, size=len(df))
+                df[col] = 0.0 # Static default
 
     return preprocess_data(df)
 
@@ -638,14 +636,32 @@ def train_model(df, commodity='cinnamon', use_tuning=True, tuning_method='optuna
 
     y_scaled = scaler_target.fit_transform(y.reshape(-1, 1)).flatten()
 
-    # Train-validation-test split
-    X_temp, X_test, y_temp, y_test = train_test_split(
-        X_scaled, y_scaled, test_size=0.2, random_state=42
-    )
+    # Chronological Split (No Shuffling)
+    # Train: 80% | Test: 20%  (Within Train -> Train: 80% | Val: 20%)
     
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_temp, y_temp, test_size=0.25, random_state=42  # 0.25 * 0.8 = 0.2 of total
-    )
+    # 1. Total Split (Train vs Test)
+    split_idx_test = int(len(X_scaled) * 0.8)
+    
+    X_temp = X_scaled[:split_idx_test]
+    y_temp = y_scaled[:split_idx_test]
+    
+    X_test = X_scaled[split_idx_test:]
+    y_test = y_scaled[split_idx_test:]
+    
+    # 2. Train vs Validation Split
+    split_idx_val = int(len(X_temp) * 0.8)
+    
+    X_train = X_temp[:split_idx_val]
+    y_train = y_temp[:split_idx_val]
+    
+    X_val = X_temp[split_idx_val:]
+    y_val = y_temp[split_idx_val:]
+    
+    # Save feature columns strictly
+    model_dir = os.path.join(BASE_DIR, 'models', f'lstm_{commodity}')
+    os.makedirs(model_dir, exist_ok=True)
+    with open(os.path.join(model_dir, 'feature_cols.json'), 'w') as f:
+        json.dump(feature_cols, f) # Using the extended list including lags
 
     logger.info(f"Training set shape: X={X_train.shape}, y={y_train.shape}")
     logger.info(f"Validation set shape: X={X_val.shape}, y={y_val.shape}")
@@ -865,15 +881,34 @@ def train_all_models(commodity='cinnamon'):
 def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
     """
     Stabilized 24-month forecast using Additive Logic (No Multipliers).
+    Strictly uses feature_cols.json and Calendar-Aware dates.
     """
+    # --- SANITY CHECK PRINT ---
+    print("\n" + "="*50)
+    print("--- 🚀 RUNNING STABILIZED FORECAST V2 (PHASE 1 REFACTOR) ---")
+    print("="*50 + "\n")
+    
     logger.info(f"Generating {steps}-step stabilized forecast for {commodity}...")
     
+    # --- 1. FEATURE CONSISTENCY CHECK ---
+    model_dir = os.path.join(BASE_DIR, 'models', f'lstm_{commodity}')
+    feature_cols_path = os.path.join(model_dir, 'feature_cols.json')
+    
+    if not os.path.exists(feature_cols_path):
+        logger.error(f"CRITICAL: feature_cols.json not found at {feature_cols_path}")
+        # We must fail as per "Strict" requirements
+        raise FileNotFoundError("feature_cols.json missing. Please retrain the model to generate this file.")
+        
+    with open(feature_cols_path, 'r') as f:
+        required_features = json.load(f)
+        
+    logger.info(f"Loaded {len(required_features)} strict features from schema.")
+
     current_df = df.copy()
     if 'Date' in current_df.columns:
         current_df = current_df.sort_values('Date')
         
-    # 1. Calculate the static "Spread" (National Price - Regional Price)
-    # We maintain this DOLLAR gap instead of a percentage ratio to stop exponential growth
+    # 2. Calculate the static "Spread" (National Price - Regional Price)
     last_row = current_df.iloc[-1]
     current_spread = 0
     if 'National_Price' in last_row and 'Regional_Price' in last_row:
@@ -881,14 +916,16 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
 
     future_dates = []
     future_prices = []
-    last_date = last_row['Date']
+    
+    # Base date for offset calculation
+    base_date = last_row['Date']
 
     for i in range(1, steps + 1):
-        # A. Setup Next Date
-        next_date = last_date + pd.Timedelta(days=30 * i)
+        # A. Setup Next Date (Calendar-Aware)
+        # Using DateOffset ensures we land on the same day next month (or end of month)
+        next_date = base_date + pd.DateOffset(months=i)
         
         # B. Naive Forecast: Copy last known features (Freeze external factors)
-        # This prevents "hallucinating" extreme inflation or weather
         next_row = current_df.iloc[-1].copy()
         next_row['Date'] = next_date
         next_row['Month'] = next_date
@@ -901,33 +938,43 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
         current_df = pd.concat([current_df, next_row_df], ignore_index=True)
         
         # C. Update Lags/Rolling features based on history
-        # We must re-run preprocessing so the new row gets its 'lag_1' from the previous prediction
         current_df = preprocess_data(current_df, training_mode=False)
         
-        # D. Predict Next Price
-        input_sequence = current_df.iloc[-SEQUENCE_LENGTH:]
+        # D. Predict Next Price with STRICT FEATURES
+        # Ensure we only use the columns in required_features
+        # And ensure they exist
+        missing_cols = [c for c in required_features if c not in current_df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required features: {missing_cols}")
+            
+        # Extract sequence and filter columns
+        input_sequence = current_df.iloc[-SEQUENCE_LENGTH:][required_features]
         
         try:
-            # Re-use the existing single-step prediction logic
-            # This ensures we use the correct scaler and features
-            pred_price = forecast_prices(model, input_sequence)
+            # Inline checks and prediction for strict compliance
+            X_seq = input_sequence.values
+            
+            # Rescale
+            X_seq_flat = X_seq.reshape(-1, len(required_features))
+            X_seq_scaled = scaler_features.transform(X_seq_flat)
+            X_input = X_seq_scaled.reshape(1, SEQUENCE_LENGTH, len(required_features))
+            
+            pred_scaled = model.predict(X_input, verbose=0)
+            pred_price = scaler_target.inverse_transform(pred_scaled)[0][0]
             
         except Exception as e:
             logger.error(f"Prediction failed at step {i}: {e}")
-            # Fallback to previous price if model fails
             pred_price = current_df.iloc[-2]['Regional_Price']
 
-        # E. STABILIZATION (The Fix)
-        # 1. Clamp changes to max 10% per month
+        # E. STABILIZATION
         prev_price = current_df.iloc[-2]['Regional_Price']
         max_change = prev_price * 0.10
         pred_price = np.clip(pred_price, prev_price - max_change, prev_price + max_change)
         
-        # 2. Update the DataFrame with the stabilized price
+        # Update DataFrame
         idx = len(current_df) - 1
         current_df.at[idx, 'Regional_Price'] = pred_price
         
-        # 3. Update National Price additively (Stable)
         if 'National_Price' in current_df.columns:
             current_df.at[idx, 'National_Price'] = pred_price + current_spread
 
