@@ -202,7 +202,7 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
         # Note: forecast_multistep now handles feature extraction dynamically
         # It yields a tuple of (dates, prices)
         
-        forecast_dates, forecast_prices = engine.forecast_multistep(model, df, steps=request.months)
+        forecast_dates, forecast_prices = engine.forecast_multistep(model, df, steps=request.months, commodity=commodity)
         
         dates = forecast_dates
         prices = [round(float(p), 2) for p in forecast_prices]
@@ -285,7 +285,7 @@ async def compare(request: CompareRequest):
             # Generate forecast for this region
             try:
                 # Use multistep forecast
-                forecast_dates, forecast_prices = engine.forecast_multistep(model, df, steps=request.months)
+                forecast_dates, forecast_prices = engine.forecast_multistep(model, df, steps=request.months, commodity=commodity)
                 
                 dates = forecast_dates
                 prices = [round(float(p), 2) for p in forecast_prices]

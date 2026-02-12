@@ -38,7 +38,7 @@ df = engine.preprocess_data(df)
 
 # Mock Model
 class MockModel:
-    def predict(self, X):
+    def predict(self, X, **kwargs):
         # Predict 300.0, which is a +100% jump from the mock start price (150.0)
         # This attempts to break the 15% clamp
         # We need to return valid scaled output that effectively maps to ~300.0
@@ -84,11 +84,15 @@ print("Dates:", dates)
 print("Prices:", prices)
 
 # Verify Logic
-# 1. Clamping: Max increase is 15% of 100 = 15. So max allowed is 115.
+# Verify Logic
+# 1. Clamping: Max increase is 12% of 100 = 12. So max allowed is 112.
 # The model tries to predict 300.
-expected_price = last_price * 1.15
-print(f"Expected Clamped Price: {expected_price}")
-assert abs(prices[0] - expected_price) < 0.01, f"Clamping failed! Got {prices[0]}, expected {expected_price}"
+# Note: Logic uses 12% clamp (0.12)
+expected_price_upper = last_price * 1.12
+print(f"Expected Clamped Price (Upper Bound): {expected_price_upper}")
+
+# Since model predicts 300, it should hit the upper clamp exactly
+assert abs(prices[0] - expected_price_upper) < 0.01, f"Clamping failed! Got {prices[0]}, expected {expected_price_upper}"
 
 # 2. Spread Preservation: 
 # The function appends the row to current_df. We can check the internal logic or just trust the code if price is right.
