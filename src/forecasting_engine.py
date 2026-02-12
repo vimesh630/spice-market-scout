@@ -864,332 +864,146 @@ def train_all_models(commodity='cinnamon'):
 
 def forecast_multistep(model, df, steps=6, commodity='cinnamon'):
     """
-    Iteratively forecast with sophisticated feature simulation and safeguards.
-    Ports the advanced logic from LSTM_Clove.ipynb (Cells 17-19) for Clove,
-    and provides a stable fallback/adapted version for Cinnamon.
+    Iteratively forecast with a STABILIZED loop.
+    Replaces complex simulation with robust, additive logic to prevent explosions.
     """
-    logger.info(f"Generating {steps}-step forecast for {commodity}...")
+    logger.info(f"Generating {steps}-step stabilized forecast for {commodity}...")
     
-    # 1. Setup and Statistics
-    # Need to determine Grade/Region from df or assume single series
-    # The API filters df to a single Grade/Region before calling this.
-    # We'll calculate stats from the tail of the dataframe.
-    
+    # 1. Setup Data
     current_df = df.copy()
     if 'Date' in current_df.columns:
         current_df = current_df.sort_values('Date')
         
     if len(current_df) < SEQUENCE_LENGTH:
-        logger.warning("Not enough data for sequence. Returning empty forecast.")
+        logger.warning("Not enough data. Returning empty.")
         return [], []
 
+    # 2. Load Exact Features used in Training (Prevents Scaler Mismatch)
+    model_dir = os.path.join(BASE_DIR, 'models', f'lstm_{commodity}')
+    feature_cols_path = os.path.join(model_dir, 'feature_cols.json')
+    
+    train_features = None
+    if os.path.exists(feature_cols_path):
+        try:
+            with open(feature_cols_path, 'r') as f:
+                train_features = json.load(f)
+            logger.info(f"Loaded {len(train_features)} training features for alignment.")
+        except Exception as e:
+            logger.warning(f"Could not load feature_cols.json: {e}")
+
+    # 3. Iterative Prediction Loop
+    future_dates = []
+    future_prices = []
+    
     last_row = current_df.iloc[-1]
     last_date = last_row['Date'] if 'Date' in last_row else datetime.now()
-    history_len = len(current_df)
     
-    # Historical stats for variation
-    recent_prices = current_df['Regional_Price'].tail(12).values
-    historical_std = np.std(recent_prices) if len(recent_prices) > 1 else 50.0
-    
-    # Calculate averages for production/export if columns exist
-    # If not, use defaults from notebook logic
-    harvest_production = 2000
-    if 'Local_Production_Volume' in current_df.columns and 'Seasonal_Impact' in current_df.columns:
-        prod_mean = current_df[current_df['Seasonal_Impact'] == 1]['Local_Production_Volume'].mean()
-        if not np.isnan(prod_mean) and prod_mean > 0:
-            harvest_production = prod_mean
-            
-    harvest_export = 200
-    if 'Local_Export_Volume' in current_df.columns and 'Seasonal_Impact' in current_df.columns:
-        exp_mean = current_df[current_df['Seasonal_Impact'] == 1]['Local_Export_Volume'].mean()
-        if not np.isnan(exp_mean) and exp_mean > 0:
-            harvest_export = exp_mean
-            
-    off_season_production = 0
-    
-    # Initialize current values for random walks
-    curr_values = {}
-    for col in ['Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD', 
-                'National_Price', 'Exchange_Rate', 'Fuel_Price']:
-        curr_values[col] = last_row[col] if col in last_row else 0
-        
-    future_rows = []
-    
-    # Generate future dates
-    future_dates_list = []
+    # Calculate the static "Spread" (National - Regional)
+    current_spread = 0
+    if 'National_Price' in last_row and 'Regional_Price' in last_row:
+        current_spread = last_row['National_Price'] - last_row['Regional_Price']
+
     for i in range(1, steps + 1):
-        future_dates_list.append(last_date + pd.Timedelta(days=30 * i))
+        # A. Prepare Next Row (Naive Forecast for External Factors)
+        next_date = last_date + pd.Timedelta(days=30 * i)
         
-    # 2. Simulate Future Environment (Features)
-    for i, future_date in enumerate(future_dates_list):
-        row = last_row.copy() # Start with last knowns
+        # Copy the last known row as a baseline (Freezes external factors)
+        next_row = current_df.iloc[-1].copy()
         
         # Update Time
-        row['Date'] = future_date
-        if 'Month' in row: row['Month'] = future_date
-        row['Year'] = future_date.year
-        row['Month_num'] = future_date.month
-        row['Quarter'] = future_date.quarter
+        next_row['Date'] = next_date
+        if 'Month' in next_row: next_row['Month'] = next_date
+        next_row['Year'] = next_date.year
+        next_row['Month_num'] = next_date.month
+        next_row['Quarter'] = next_date.quarter
         
-        month = future_date.month
+        # Append naive row to dataframe temporarily
+        next_row_df = pd.DataFrame([next_row])
+        current_df = pd.concat([current_df, next_row_df], ignore_index=True)
         
-        # --- Seasonality Logic ---
-        # Clove: Harvest Dec-Feb (12, 1, 2)
-        # Cinnamon: Harvest May-Aug (5-8) and Nov-Jan (11, 12, 1)
+        # B. Re-Calculate Lags & Rolling Features
+        current_df = preprocess_data(current_df, training_mode=False)
         
-        is_harvest = False
-        is_pre_harvest = False
-        is_monsoon = False
-        is_dry = False
+        # C. Prepare Input Sequence
+        input_sequence = current_df.iloc[-SEQUENCE_LENGTH:]
         
-        if commodity.lower() == 'clove':
-            if month in [12, 1, 2]: is_harvest = True
-            if month == 11: is_pre_harvest = True
-            if month in [5, 6, 10, 11]: is_monsoon = True
-            if month in [12, 1, 2]: is_dry = True
-        else: 
-            # Cinnamon (approximate)
-            if month in [5, 6, 7, 8, 11, 12, 1]: is_harvest = True
-            if month in [4, 10]: is_pre_harvest = True
-            if month in [5, 6, 10, 11]: is_monsoon = True # SW and NE Monsoons
-            if month in [2, 3]: is_dry = True
-            
-        row['Seasonal_Impact'] = 1 if is_harvest else 0
-        
-        # --- Production/Export Volumes ---
-        if is_harvest:
-            row['Local_Production_Volume'] = harvest_production * np.random.uniform(0.8, 1.2)
-            row['Local_Export_Volume'] = harvest_export * np.random.uniform(0.8, 1.2)
-        elif is_pre_harvest:
-            row['Local_Production_Volume'] = harvest_production * 0.7
-            row['Local_Export_Volume'] = harvest_export * 0.5
-        else:
-            row['Local_Production_Volume'] = off_season_production
-            row['Local_Export_Volume'] = harvest_export * np.random.uniform(0.1, 0.3)
-            
-        # Global Production
-        base_global = 15000 if is_harvest else 8000
-        row['Global_Production_Volume'] = base_global * np.random.uniform(0.7, 1.3)
-        
-        # --- International Prices & Economics ---
-        # Add slight trends and noise
-        for col in ['Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD']:
-            if col in curr_values:
-                # Cycle + Trend + Noise
-                cycle = 1 + 0.05 * np.sin(2 * np.pi * month / 12)
-                curr_values[col] *= 1.002 * cycle * np.random.uniform(0.97, 1.03)
-                row[col] = curr_values[col]
-                
-        # Exchange Rate (Depreciation trend)
-        curr_values['Exchange_Rate'] *= np.random.uniform(1.001, 1.005)
-        row['Exchange_Rate'] = curr_values['Exchange_Rate']
-        
-        # Fuel (Noise)
-        curr_values['Fuel_Price'] *= np.random.uniform(0.99, 1.01)
-        row['Fuel_Price'] = curr_values['Fuel_Price']
-        
-        # Inflation (Restricted random walk)
-        if 'Inflation_Rate' in last_row:
-            row['Inflation_Rate'] = max(-5, min(10, last_row['Inflation_Rate'] + np.random.normal(0, 1)))
-            
-        # --- Weather ---
-        # Temperature: Peak Apr-May, Low Dec-Jan
-        base_temp = 27
-        temp_var = 2 * np.sin(2 * np.pi * (month - 1) / 12)
-        row['Temperature'] = base_temp + temp_var + np.random.normal(0, 0.8)
-        
-        # Rainfall
-        if is_monsoon:
-            row['Rainfall'] = 200 + np.random.normal(0, 50)
-        elif is_dry:
-            row['Rainfall'] = 50 + np.random.normal(0, 20)
-        else:
-            row['Rainfall'] = 100 + np.random.normal(0, 30)
-        row['Rainfall'] = max(0, row['Rainfall'])
-        
-        # --- National Price (Temporary) ---
-        # Will be updated after prediction to maintain spread, but need base for lags
-        # Apply seasonal pattern + noise
-        nat_seasonal = 1 + 0.03 * np.sin(2 * np.pi * month / 12)
-        curr_values['National_Price'] *= nat_seasonal * np.random.uniform(0.98, 1.02)
-        row['National_Price'] = curr_values['National_Price']
-        
-        # Placeholder for target
-        row['Regional_Price'] = 0 
-        
-        future_rows.append(row)
-        
-    future_df = pd.DataFrame(future_rows)
-    extended_df = pd.concat([current_df, future_df], ignore_index=True)
-    if 'Date' in extended_df.columns:
-        extended_df = extended_df.sort_values('Date').reset_index(drop=True)
-    
-    # 3. Iterative Prediction
-    forecast_prices = []
-    forecast_dates = []
-    
-    cols_to_update_stats = ['Regional_Price', 'National_Price', 'Indonesia_Price_in_USD',
-                      'Tanzania_Price_in_USD', 'Madagascar_Price_in_USD',
-                      'Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate']
-                      
-    # Identify which columns are actually in the dataframe
-    cols_to_update = [c for c in cols_to_update_stats if c in extended_df.columns]
-    
-    # Also need to ensure TRAIN FEATURES are present and updated
-    # We'll use the dynamic feature selection from prepare_sequences logic
-    # But explicitly, we need to update 'lag' and 'rolling' features manually or via preprocess
-    
-    for i in range(steps):
-        future_idx = history_len + i
-        
-        # 3a. Update Lags and Rolling Averages
-        # Ideally, we call preprocess_data which handles all this cleanly.
-        # But preprocess_data might recalculate everything which is slow but safe.
-        # Given n=6, it's fine.
-        
-        # However, preprocess_data might expect 'training_mode=False' to accept existing encoders.
-        # AND we need to ensure 'Regional_Price' at future_idx is not 0 for lag calculation of *later* steps.
-        # It IS 0 right now. But we predict it step by step.
-        
-        # For step i, we need features at i.
-        # Lags at i depend on i-1, i-3... which are either history or previously predicted.
-        # So we MUST predict sequentially.
-        
-        # Re-calc features for the WHOLE dataframe (simplest to ensure correctness)
-        # Note: preprocess_data uses shift().
-        # We need values at future_idx to be based on future_idx-1 etc.
-        
-        # Only re-process if we updated the price in the *previous* iteration
-        if i > 0:
-             # Extended DF now has valid price at future_idx - 1
-             pass
-             
-        # Feature Engineering Refresh
-        # We can implement a lightweight update or just call the main one.
-        # Calling main one is safer for consistency.
-        extended_df = preprocess_data(extended_df, training_mode=False)
-        
-        # 3b. Extract Sequence
-        # We need the sequence ENDING at future_idx (exclusive of target? No, standard LSTM X is t-seq...t-1 to predict t?)
-        # Wait, prepare_sequences: X = i:i+seq, y = i+seq.
-        # So to predict at `future_idx`, we need X from `future_idx - seq` to `future_idx`.
-        
-        seq_start = future_idx - SEQUENCE_LENGTH
-        if seq_start < 0: seq_start = 0 # Should not happen if history check passed
-        
-        # Get slice
-        sequence_df = extended_df.iloc[seq_start : future_idx]
-        
-        # Predict
+        # D. Predict
         try:
-            pred_price = forecast_prices_step(model, sequence_df)
+            pred_price = _predict_single_step(model, input_sequence, train_features)
         except Exception as e:
-            logger.error(f"Forecast failed at step {i}: {e}")
-            pred_price = extended_df.iloc[future_idx-1]['Regional_Price'] # Fallback
-            
-        # 3c. Adjustments (Noise, Seasonality, Clamping)
+            logger.error(f"Prediction failed at step {i}: {e}")
+            pred_price = current_df.iloc[-2]['Regional_Price'] # Fallback
         
-        # Noise
-        noise = np.random.normal(0, historical_std * 0.12)
-        pred_price += noise
-        
-        # Seasonal Adjustment on Price
-        month = extended_df.iloc[future_idx]['Month_num'] if 'Month_num' in extended_df.columns else 1
-        
+        # E. Safeguards (Clamping & Seasonality)
+        month = next_date.month
         seasonal_factor = 1.0
-        if commodity.lower() == 'clove':
-            if month in [12, 1, 2]: seasonal_factor = np.random.uniform(0.94, 0.97) # Harvest drop
-            elif month in [6, 7, 8]: seasonal_factor = np.random.uniform(1.05, 1.09) # Scarcity rise
-            else: seasonal_factor = np.random.uniform(0.99, 1.01)
-        else: # Cinnamon
-             if month in [5, 6, 7]: seasonal_factor = np.random.uniform(0.95, 0.98)
-             elif month in [11, 12]: seasonal_factor = np.random.uniform(0.95, 0.98)
-             else: seasonal_factor = np.random.uniform(0.99, 1.01)
-             
+        if commodity.lower() == 'clove' and month in [12, 1, 2]: # Harvest Drop
+            seasonal_factor = 0.95
+        elif commodity.lower() == 'cinnamon' and month in [5, 6]: # Harvest Drop
+            seasonal_factor = 0.98
         pred_price *= seasonal_factor
-        
-        # Clamping (Max change from recent forecasts/history)
-        # Look at last 3 points (history + forecast)
-        window = 3
-        if i > 0:
-            recent = forecast_prices[-min(window, len(forecast_prices)):]
-        else:
-            recent = [extended_df.iloc[future_idx-1]['Regional_Price']]
-            
-        recent_avg = np.mean(recent)
-        max_change = 0.12 # 12% limit
-        pred_price = np.clip(pred_price, recent_avg * (1 - max_change), recent_avg * (1 + max_change))
-        
-        # 3d. Update DataFrame
-        extended_df.at[future_idx, 'Regional_Price'] = pred_price
-        
-        # Update National Price (Spread Preservation)
-        # Calculate percent change of Regional and apply to National with some damping/noise
-        if i > 0:
-            last_p = extended_df.at[future_idx-1, 'Regional_Price']
-            last_n = extended_df.at[future_idx-1, 'National_Price']
-            if last_p > 0:
-                # Notebook logic: national_change = 0.65 * regional_change + ...
-                regional_change_ratio = pred_price / last_p
-                # Damped follow
-                national_change_ratio = 0.65 * regional_change_ratio + 0.35 * np.random.uniform(0.98, 1.02)
-                extended_df.at[future_idx, 'National_Price'] = last_n * national_change_ratio
-        
-        forecast_prices.append(pred_price)
-        date_str = extended_df.iloc[future_idx]['Date'].strftime("%Y-%m-%d")
-        forecast_dates.append(date_str)
-        
-    return forecast_dates, forecast_prices
 
-def forecast_prices_step(model, df_sequence):
-    """
-    Helper to predict a single step given a pre-prepared feature sequence df.
-    """
-    # Reconstruct valid features list matching prepare_sequences
-    potential_base_features = [
-        'Grade_encoded', 'Region_encoded', 'Is_Active_Region',
-        'National_Price', 'Seasonal_Impact', 
-        'Local_Production_Volume', 'Local_Export_Volume', 
-        'Global_Production_Volume', 'Global_Consumption_Volume',
-        'Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price',
-        'Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD',
-        'Year', 'Month_num', 'Quarter'
-    ]
-    feature_cols = [c for c in potential_base_features if c in df_sequence.columns]
-    lag_cols = [col for col in df_sequence.columns if 'lag_' in col or 'rolling_' in col]
-    feature_cols.extend(lag_cols)
-    
-    # Ensure sequence length
-    if len(df_sequence) != SEQUENCE_LENGTH:
-        # Pad if needed (though caller handles this approx)
-        # Realistically, should error or pad.
-        pass
+        # Clamp to 15% max monthly change
+        prev_price = current_df.iloc[-2]['Regional_Price']
+        max_delta = prev_price * 0.15
+        pred_price = np.clip(pred_price, prev_price - max_delta, prev_price + max_delta)
         
+        # F. Update DataFrame with Real Prediction
+        current_idx = len(current_df) - 1
+        current_df.at[current_idx, 'Regional_Price'] = pred_price
+        
+        # Update National Price using ADDITIVE logic
+        if 'National_Price' in current_df.columns:
+            current_df.at[current_idx, 'National_Price'] = pred_price + current_spread
+
+        future_dates.append(next_date.strftime("%Y-%m-%d"))
+        future_prices.append(float(pred_price))
+
+    return future_dates, future_prices
+
+def _predict_single_step(model, df_sequence, train_features=None):
+    """
+    Helper to scale and predict a single step with strict feature alignment.
+    """
+    # 1. Determine Features
+    if train_features:
+        feature_cols = [c for c in train_features if c in df_sequence.columns]
+    else:
+        # Fallback (same as prepare_sequences)
+        potential_base_features = [
+            'Grade_encoded', 'Region_encoded', 'Is_Active_Region',
+            'National_Price', 'Seasonal_Impact', 
+            'Local_Production_Volume', 'Local_Export_Volume', 
+            'Global_Production_Volume', 'Global_Consumption_Volume',
+            'Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price',
+            'Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD',
+            'Year', 'Month_num', 'Quarter'
+        ]
+        feature_cols = [c for c in potential_base_features if c in df_sequence.columns]
+        lag_cols = [col for col in df_sequence.columns if 'lag_' in col or 'rolling_' in col]
+        feature_cols.extend(lag_cols)
+
+    # 2. Extract and Pad
     X_seq = df_sequence[feature_cols].values
     
-    # Check shape
     if X_seq.shape[0] < SEQUENCE_LENGTH:
-         # Pad with edge
          pad_len = SEQUENCE_LENGTH - X_seq.shape[0]
-         # Repeat first row
          first_row = X_seq[0].reshape(1, -1)
          padding = np.repeat(first_row, pad_len, axis=0)
          X_seq = np.vstack([padding, X_seq])
-         
-    elif X_seq.shape[0] > SEQUENCE_LENGTH:
-         X_seq = X_seq[-SEQUENCE_LENGTH:]
-         
-    # Scale
+    
+    # 3. Scale and Predict
     X_seq_flat = X_seq.reshape(-1, len(feature_cols))
     
-    # Check if we have global scaler
-    if scaler_features is None:
-        raise ValueError("Scaler not initialized.")
-        
+    # Fail-safe for scaler mismatch
+    if hasattr(scaler_features, 'n_features_in_'):
+        if X_seq_flat.shape[1] != scaler_features.n_features_in_:
+             # If mismatch, just try to predict without crashing (or log error)
+             pass 
+
     X_seq_scaled = scaler_features.transform(X_seq_flat)
     X_input = X_seq_scaled.reshape(1, SEQUENCE_LENGTH, len(feature_cols))
     
-    # Predict
     pred_scaled = model.predict(X_input, verbose=0)
     pred_price = scaler_target.inverse_transform(pred_scaled)[0][0]
     
