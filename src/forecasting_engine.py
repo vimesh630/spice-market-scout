@@ -442,26 +442,52 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
     logger.info(f"Anchoring Bias: {anchor_bias:.2f}")
 
     # Scenarios Definition
-    scenarios = {
-        'Baseline': {
-            'drift': 1.002,          # Slight Inflation
-            'supply_mod': 1.00,
-            'demand_mod': 1.00,
-            'weather_amp': 1.0
-        },
-        'Optimistic': {
-            'drift': 1.005,          # Stronger Market
-            'supply_mod': 0.95,      # Tighter Supply (High Prices)
-            'demand_mod': 1.05,      # High Demand
-            'weather_amp': 0.8       # Mild weather impact
-        }, 
-        'Pessimistic': {
-            'drift': 0.995,          # Weak Market
-            'supply_mod': 1.05,      # Oversupply (Low Prices)
-            'demand_mod': 0.95,      # Low Demand
-            'weather_amp': 1.2       # Volatile weather
-        } 
-    }
+    # Dynamic Scenario Parameters based on Commodity
+    if commodity.lower() == 'pepper':
+        # Aggressive Bullish Parameters for Pepper to counteract bias
+        scenarios = {
+            'Baseline': {
+                'drift': 1.002,          # Neutral/Slight Growth (was default 1.002)
+                'supply_mod': 1.00,
+                'demand_mod': 1.00,
+                'weather_amp': 1.0
+            },
+            'Optimistic': {
+                'drift': 1.015,          # 1.5% Monthly Growth (Aggressive)
+                'supply_mod': 0.90,      # Severe Scarcity
+                'demand_mod': 1.10,      # High Demand
+                'weather_amp': 0.8
+            }, 
+            'Pessimistic': {
+                'drift': 0.995,          # Weak Market
+                'supply_mod': 1.05,
+                'demand_mod': 0.95,
+                'weather_amp': 1.2
+            } 
+        }
+        logger.info("Using Aggressive Bullish Scenarios for Pepper.")
+    else:
+        # Standard Parameters for Cinnamon/Clove
+        scenarios = {
+            'Baseline': {
+                'drift': 1.002,
+                'supply_mod': 1.00,
+                'demand_mod': 1.00,
+                'weather_amp': 1.0
+            },
+            'Optimistic': {
+                'drift': 1.005,
+                'supply_mod': 0.95,
+                'demand_mod': 1.05,
+                'weather_amp': 0.8
+            }, 
+            'Pessimistic': {
+                'drift': 0.995,
+                'supply_mod': 1.05,
+                'demand_mod': 0.95,
+                'weather_amp': 1.2
+            } 
+        }
 
     results = {}
 
@@ -550,10 +576,21 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
             
             # Scenario Nudges (Explicit Manual Override)
             if name == 'Optimistic':
-                clamped_pred *= 1.002 # Subtle cumulative boost
+                if commodity.lower() == 'pepper':
+                    clamped_pred *= 1.008 # Boosted Nudge for Pepper (0.8% per month)
+                else:
+                    clamped_pred *= 1.002 # Subtle cumulative boost
             elif name == 'Pessimistic':
                 clamped_pred *= 0.998 # Subtle cumulative drag
             
+            # --- SUPPORT LEVEL LOGIC (Mean Reversion) ---
+            # Prevent death spirals. If price drops below 70% of starting price, buyers step in.
+            support_level = last_real_price * 0.70
+            if clamped_pred < support_level:
+                # Apply Rebound Factor
+                clamped_pred *= 1.05 
+                # logger.debug(f"Support Level Triggered: {clamped_pred:.2f} < {support_level:.2f}")
+
             # Hard Floor at 0
             final_pred = float(max(0.0, clamped_pred))
 
