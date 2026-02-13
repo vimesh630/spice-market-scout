@@ -453,7 +453,7 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
                 'weather_amp': 1.0
             },
             'Optimistic': {
-                'drift': 1.015,          # 1.5% Monthly Growth (Aggressive)
+                'drift': 1.002,          # Neutral (Prevent Export Competition Bias)
                 'supply_mod': 0.90,      # Severe Scarcity
                 'demand_mod': 1.10,      # High Demand
                 'weather_amp': 0.8
@@ -528,11 +528,27 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
             rain_wave = np.sin((month_num - 5) * np.pi / 3) # Faster cycle?
             next_row['Rainfall'] = 200 + (100 * rain_wave * params['weather_amp'])
 
+            # --- 3. Production & Consumption Logic (Re-Added) ---
+            # Base Production
+            base_prod = current_df.iloc[-1].get('Local_Production_Volume', 1000)
+            
+            # Harvest Spikes (Seasonality)
+            if commodity.lower() == 'pepper':
+                if month_num in [5, 6, 7]: base_prod *= 1.3 # Harvest Peak
+            elif commodity.lower() == 'cinnamon':
+                if month_num in [5, 6, 11, 12]: base_prod *= 1.2
+            elif commodity.lower() == 'clove':
+                if month_num in [12, 1, 2]: base_prod *= 1.3
+
+            # Apply Scenario Modifiers (The Fix)
+            if 'Local_Production_Volume' in next_row:
+                next_row['Local_Production_Volume'] = base_prod * params['supply_mod']
+            
+            if 'Global_Consumption_Volume' in next_row:
+                next_row['Global_Consumption_Volume'] = next_row['Global_Consumption_Volume'] * params['demand_mod']
+
             # Competitors / Global (Drift)
-            drift_cols = [
-                'Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD',
-                'Global_Consumption_Volume', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price'
-            ]
+            drift_cols = ['Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Exchange_Rate', 'Inflation_Rate']
             for col in drift_cols:
                 if col in next_row:
                     next_row[col] = next_row[col] * params['drift']
@@ -583,13 +599,11 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
             elif name == 'Pessimistic':
                 clamped_pred *= 0.998 # Subtle cumulative drag
             
-            # --- SUPPORT LEVEL LOGIC (Mean Reversion) ---
-            # Prevent death spirals. If price drops below 70% of starting price, buyers step in.
+            # --- HARD FLOOR SUPPORT (The Fix) ---
+            # If price drops below 70% of last real price, force it to stay there.
             support_level = last_real_price * 0.70
             if clamped_pred < support_level:
-                # Apply Rebound Factor
-                clamped_pred *= 1.05 
-                # logger.debug(f"Support Level Triggered: {clamped_pred:.2f} < {support_level:.2f}")
+                clamped_pred = support_level
 
             # Hard Floor at 0
             final_pred = float(max(0.0, clamped_pred))
@@ -614,7 +628,7 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
 
 if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    commodities = ['cinnamon', 'clove']
+    commodities = ['cinnamon', 'clove', 'pepper']
     for com in commodities:
         data_path = os.path.join(base_dir, 'data', 'processed', f'{com}_prices.csv')
         if os.path.exists(data_path):
