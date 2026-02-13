@@ -169,34 +169,34 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
         raise HTTPException(status_code=404, detail=f"Data file for {commodity} not found")
 
     try:
-        # Load and preprocess data using engine
-        # This now returns a Long format enriched dataframe (with all features)
-        df = engine.load_and_prepare_data(current_data_path)
-        
-        # Filter logic (Region/Grade)
-        if 'Grade' in df.columns:
-            # Filter by Grade
-            valid_grades = df['Grade'].unique()
-            if request.grade not in valid_grades:
-                 # Fallback: Use first available grade if requested not found? 
-                 # Or specific error. Let's return error but list available.
-                 raise HTTPException(status_code=400, detail=f"Grade {request.grade} not found. Available: {list(valid_grades)}")
-            
-            df = df[df['Grade'] == request.grade]
-            
-            # Filter by Region if it exists in data
-            if 'Region' in df.columns:
-                valid_regions = df['Region'].unique()
-                if request.region in valid_regions:
-                    df = df[df['Region'] == request.region]
-                else:
-                    # If specific region not found, maybe just warn? 
-                    # For now, simplistic check.
-                    pass
-            
-            # Ensure proper sorting
-            if 'Date' in df.columns:
-                df = df.sort_values('Date')
+        # Read raw and filter first (case-insensitive), then preprocess only this series.
+        raw_df = pd.read_csv(current_data_path)
+
+        if 'Grade' in raw_df.columns:
+            grade_norm = raw_df['Grade'].astype(str).str.strip().str.casefold()
+            requested_grade = str(request.grade).strip().casefold()
+            valid_grades = sorted(raw_df['Grade'].astype(str).dropna().unique().tolist())
+            if not (grade_norm == requested_grade).any():
+                raise HTTPException(status_code=400, detail=f"Grade {request.grade} not found. Available: {valid_grades}")
+            raw_df = raw_df[grade_norm == requested_grade]
+
+        if 'Region' in raw_df.columns:
+            region_norm = raw_df['Region'].astype(str).str.strip().str.casefold()
+            requested_region = str(request.region).strip().casefold()
+            valid_regions = sorted(raw_df['Region'].astype(str).dropna().unique().tolist())
+            if not (region_norm == requested_region).any():
+                raise HTTPException(status_code=400, detail=f"Region {request.region} not found for grade {request.grade}. Available: {valid_regions}")
+            raw_df = raw_df[region_norm == requested_region]
+
+        if raw_df.empty:
+            raise HTTPException(status_code=400, detail="No data available for requested grade/region.")
+
+        df = engine.preprocess_data(raw_df.copy(), training_mode=False)
+        if 'Date' in df.columns:
+            df = df.sort_values('Date')
+
+        if len(df) < engine.SEQUENCE_LENGTH:
+            raise HTTPException(status_code=400, detail=f"Not enough history for forecasting. Need at least {engine.SEQUENCE_LENGTH} rows.")
 
         # Get the forecast from engine using multistep (Phase 3: Scenarios)
         # Returns dict: {'Baseline': {dates, prices}, 'Optimistic': ..., 'Pessimistic': ...}
@@ -258,36 +258,40 @@ async def compare(request: CompareRequest):
         raise HTTPException(status_code=404, detail=f"Data file for {commodity} not found")
 
     try:
-        # Load and preprocess data using engine
-        full_df = engine.load_and_prepare_data(current_data_path)
+        # Read raw once and filter before preprocessing each region series.
+        full_raw_df = pd.read_csv(current_data_path)
         
         comparison_results = []
         
         # Validations
-        if 'Grade' in full_df.columns:
-            valid_grades = full_df['Grade'].unique()
-            if request.grade not in valid_grades:
-                 raise HTTPException(status_code=400, detail=f"Grade {request.grade} not found.")
+        if 'Grade' in full_raw_df.columns:
+            grade_norm = full_raw_df['Grade'].astype(str).str.strip().str.casefold()
+            requested_grade = str(request.grade).strip().casefold()
+            valid_grades = sorted(full_raw_df['Grade'].astype(str).dropna().unique().tolist())
+            if not (grade_norm == requested_grade).any():
+                 raise HTTPException(status_code=400, detail=f"Grade {request.grade} not found. Available: {valid_grades}")
+            full_raw_df = full_raw_df[grade_norm == requested_grade]
         
         # Iterate through requested regions
         for region in request.regions:
-            df = full_df.copy()
-            
-            # Filter Logic similar to predict
-            if 'Grade' in df.columns:
-                df = df[df['Grade'] == request.grade]
-            
-            if 'Region' in df.columns:
-                valid_regions = df['Region'].unique()
-                if region not in valid_regions:
+            region_df = full_raw_df.copy()
+
+            if 'Region' in region_df.columns:
+                region_norm = region_df['Region'].astype(str).str.strip().str.casefold()
+                requested_region = str(region).strip().casefold()
+                if not (region_norm == requested_region).any():
                     print(f"Warning: Region {region} not found in data for {commodity}")
-                    continue # Skip invalid region
-                df = df[df['Region'] == region]
-            
+                    continue
+                region_df = region_df[region_norm == requested_region]
+
+            if region_df.empty:
+                continue
+
+            df = engine.preprocess_data(region_df.copy(), training_mode=False)
             if 'Date' in df.columns:
                 df = df.sort_values('Date')
-                
-            if df.empty:
+            if len(df) < engine.SEQUENCE_LENGTH:
+                print(f"Warning: Region {region} has fewer than {engine.SEQUENCE_LENGTH} rows after filtering.")
                 continue
 
             # Generate forecast for this region

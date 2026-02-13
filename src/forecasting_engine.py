@@ -26,6 +26,26 @@ scaler_features = None
 scaler_target = None
 label_encoders = {}
 
+def _safe_label_transform(series, encoder, column_name):
+    """Transform labels with a stable unknown fallback (0) without zeroing known labels."""
+    values = series.astype(str)
+    class_to_index = {str(label): idx for idx, label in enumerate(encoder.classes_)}
+    encoded = values.map(class_to_index)
+
+    # Case-insensitive fallback for mixed-casing datasets (e.g., Alba vs alba).
+    unknown_mask = encoded.isna()
+    if unknown_mask.any():
+        class_to_index_ci = {}
+        for label, idx in class_to_index.items():
+            class_to_index_ci.setdefault(label.strip().casefold(), idx)
+        encoded.loc[unknown_mask] = values.loc[unknown_mask].str.strip().str.casefold().map(class_to_index_ci)
+
+    unknown_mask = encoded.isna()
+    if unknown_mask.any():
+        unknown_count = int(unknown_mask.sum())
+        logger.warning(f"Found {unknown_count} unseen labels in {column_name}. Mapping them to 0.")
+    return encoded.fillna(0).astype(int)
+
 def preprocess_data(df, training_mode=True):
     """
     Apply feature engineering with strict encoder handling and no leakage.
@@ -49,11 +69,11 @@ def preprocess_data(df, training_mode=True):
             if training_mode:
                 df[f'{col}_encoded'] = label_encoders[col].fit_transform(df[col].astype(str))
             else:
-                try:
-                    df[f'{col}_encoded'] = label_encoders[col].transform(df[col].astype(str))
-                except ValueError:
-                    logger.warning(f"Unseen label in {col}. Using 0.")
-                    df[f'{col}_encoded'] = 0 
+                if not hasattr(label_encoders[col], 'classes_') or len(label_encoders[col].classes_) == 0:
+                    logger.warning(f"Label encoder for {col} is not initialized. Fitting on current data as fallback.")
+                    df[f'{col}_encoded'] = label_encoders[col].fit_transform(df[col].astype(str))
+                else:
+                    df[f'{col}_encoded'] = _safe_label_transform(df[col], label_encoders[col], col)
 
     # Key Date Features
     if 'Date' in df.columns:
@@ -82,13 +102,32 @@ def preprocess_data(df, training_mode=True):
             else:
                 df[col_name] = df[col].rolling(window).mean()
 
-    # Impute missing values deterministically (ffill/bfill)
-    # NO RANDOMNESS
-    df = df.ffill().bfill().fillna(0)
+    # Impute missing values without leaking future or cross-series information.
+    if groups:
+        sort_cols = groups + (['Date'] if 'Date' in df.columns else [])
+        df = df.sort_values(sort_cols)
+        fill_cols = [c for c in df.columns if c not in groups]
+        df[fill_cols] = df.groupby(groups)[fill_cols].ffill()
+    else:
+        df = df.sort_values('Date') if 'Date' in df.columns else df
+        df = df.ffill()
+
+    # Cold-start lag/rolling values should not be backfilled from future rows.
+    for col in lag_columns:
+        for lag in [1, 3, 6, 12]:
+            lag_col = f'{col}_lag_{lag}'
+            if lag_col in df.columns:
+                df[lag_col] = df[lag_col].fillna(df[col])
+        for window in [3, 6, 12]:
+            roll_col = f'{col}_rolling_{window}'
+            if roll_col in df.columns:
+                df[roll_col] = df[roll_col].fillna(df[col])
+
+    df = df.fillna(0)
     
     return df
 
-def load_and_prepare_data(data_path):
+def load_and_prepare_data(data_path, training_mode=True):
     """
     Loads and prepares data. 
     Phase 3: ZERO Randomness. Strict classification of features.
@@ -123,7 +162,7 @@ def load_and_prepare_data(data_path):
     # preprocess_data handles missingness via imputation or filling 0 if col exists.
     
     df = df.dropna(subset=['Regional_Price'])
-    return preprocess_data(df, training_mode=True)
+    return preprocess_data(df, training_mode=training_mode)
 
 def prepare_sequences(df, sequence_length=12, target_col='Regional_Price'):
     """
@@ -149,7 +188,7 @@ def prepare_sequences(df, sequence_length=12, target_col='Regional_Price'):
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     df[numeric_cols] = df[numeric_cols].fillna(0)
 
-    X_sequences, y_sequences = [], []
+    X_sequences, y_sequences, target_dates = [], [], []
 
     # Handle Series
     if 'Grade' in df.columns and 'Region' in df.columns:
@@ -163,6 +202,10 @@ def prepare_sequences(df, sequence_length=12, target_col='Regional_Price'):
                     y_seq = subset.iloc[i + sequence_length][target_col]
                     X_sequences.append(X_seq)
                     y_sequences.append(y_seq)
+                    if 'Date' in subset.columns:
+                        target_dates.append(subset.iloc[i + sequence_length]['Date'])
+                    else:
+                        target_dates.append(i + sequence_length)
     else:
         if len(df) >= sequence_length + 1:
             for i in range(len(df) - sequence_length):
@@ -170,8 +213,12 @@ def prepare_sequences(df, sequence_length=12, target_col='Regional_Price'):
                 y_seq = df.iloc[i + sequence_length][target_col]
                 X_sequences.append(X_seq)
                 y_sequences.append(y_seq)
+                if 'Date' in df.columns:
+                    target_dates.append(df.iloc[i + sequence_length]['Date'])
+                else:
+                    target_dates.append(i + sequence_length)
 
-    return np.array(X_sequences), np.array(y_sequences), valid_feature_cols
+    return np.array(X_sequences), np.array(y_sequences), valid_feature_cols, np.array(target_dates)
 
 def build_lstm_model(input_shape):
     model = Sequential()
@@ -200,6 +247,8 @@ def calculate_directional_accuracy(y_true, y_pred):
     diff_pred = np.diff(y_pred)
     # Align lengths
     min_len = min(len(diff_true), len(diff_pred))
+    if min_len == 0:
+        return 0.0
     correct_direction = np.sign(diff_true[:min_len]) == np.sign(diff_pred[:min_len])
     return np.mean(correct_direction)
 
@@ -213,23 +262,37 @@ def train_model(df, commodity='cinnamon', epochs=50, batch_size=32, **kwargs):
     scaler_target = MinMaxScaler(feature_range=(0, 1))
     
     # 1. Prepare Sequences
-    X, y, feature_cols = prepare_sequences(df, SEQUENCE_LENGTH)
+    X, y, feature_cols, target_dates = prepare_sequences(df, SEQUENCE_LENGTH)
     
     if len(X) == 0: raise ValueError("No sequences created.")
 
-    # 2. Scale
-    n_samples, n_timesteps, n_features = X.shape
-    X_reshaped = X.reshape(-1, n_features)
-    X_scaled = scaler_features.fit_transform(X_reshaped).reshape(n_samples, n_timesteps, n_features)
-    y_scaled = scaler_target.fit_transform(y.reshape(-1, 1)).flatten()
+    # Strict chronological order across all sequences before splitting.
+    sort_idx = np.argsort(target_dates)
+    X = X[sort_idx]
+    y = y[sort_idx]
 
-    # 3. PHASE 3 SPLIT: 70% Train, 15% Val, 15% Test
+    # 2. Split (before scaling to avoid leakage)
     idx_train = int(len(X) * 0.70)
     idx_val = int(len(X) * 0.85)
 
-    X_train, y_train = X_scaled[:idx_train], y_scaled[:idx_train]
-    X_val, y_val = X_scaled[idx_train:idx_val], y_scaled[idx_train:idx_val]
-    X_test, y_test = X_scaled[idx_val:], y_scaled[idx_val:]
+    X_train_raw, y_train_raw = X[:idx_train], y[:idx_train]
+    X_val_raw, y_val_raw = X[idx_train:idx_val], y[idx_train:idx_val]
+    X_test_raw, y_test_raw = X[idx_val:], y[idx_val:]
+
+    if len(X_train_raw) == 0 or len(X_val_raw) == 0 or len(X_test_raw) == 0:
+        raise ValueError("Insufficient sequences for train/val/test split.")
+
+    # 3. Scale (fit only on train split)
+    n_samples, n_timesteps, n_features = X.shape
+    scaler_features.fit(X_train_raw.reshape(-1, n_features))
+    X_train = scaler_features.transform(X_train_raw.reshape(-1, n_features)).reshape(X_train_raw.shape[0], n_timesteps, n_features)
+    X_val = scaler_features.transform(X_val_raw.reshape(-1, n_features)).reshape(X_val_raw.shape[0], n_timesteps, n_features)
+    X_test = scaler_features.transform(X_test_raw.reshape(-1, n_features)).reshape(X_test_raw.shape[0], n_timesteps, n_features)
+
+    scaler_target.fit(y_train_raw.reshape(-1, 1))
+    y_train = scaler_target.transform(y_train_raw.reshape(-1, 1)).flatten()
+    y_val = scaler_target.transform(y_val_raw.reshape(-1, 1)).flatten()
+    y_test = scaler_target.transform(y_test_raw.reshape(-1, 1)).flatten()
 
     logger.info(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
 
@@ -243,12 +306,13 @@ def train_model(df, commodity='cinnamon', epochs=50, batch_size=32, **kwargs):
         epochs=epochs,
         batch_size=batch_size,
         callbacks=[EarlyStopping(patience=10, restore_best_weights=True)],
+        shuffle=False,
         verbose=1
     )
 
     # 5. Evaluate Realism (Phase 3)
     y_pred_test = model.predict(X_test).flatten()
-    y_true_orig = scaler_target.inverse_transform(y_test.reshape(-1,1)).flatten()
+    y_true_orig = y_test_raw
     y_pred_orig = scaler_target.inverse_transform(y_pred_test.reshape(-1,1)).flatten()
     
     da = calculate_directional_accuracy(y_true_orig, y_pred_orig)
@@ -280,6 +344,7 @@ def load_artifacts(commodity='cinnamon'):
         return None
 
 def _predict_single_step(model, df_sequence, train_features):
+    df_sequence = df_sequence.copy()
     # Filter/Fill
     for col in train_features:
         if col not in df_sequence.columns: df_sequence[col] = 0
@@ -359,6 +424,7 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
          raw_pred_t1 = last_real_price
 
     anchor_bias = last_real_price - raw_pred_t1
+    # anchor_bias = float(np.clip(anchor_bias, -adaptive_clamp, adaptive_clamp))
     logger.info(f"Anchoring Bias Calculated: {anchor_bias:.2f} (Last Real: {last_real_price:.2f} vs Raw Pred: {raw_pred_t1:.2f})")
 
     # Scenarios Definition
@@ -399,10 +465,8 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
         scenario_dates = []
         scenario_prices = []
 
-        curr_date = last_row['Date']
-
         for i in range(1, steps + 1):
-            next_date = curr_date + pd.DateOffset(months=i)
+            next_date = current_df.iloc[-1]['Date'] + pd.DateOffset(months=1)
             month_num = next_date.month
             
             # Project Exogenous
@@ -440,7 +504,9 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
             # We decay the bias slowly over time to eventually trust the model? 
             # Or keep it constant to maintain level shift?
             # For 12 months, constant is safer to prevent reversion to "bad" mean.
-            adjusted_pred = raw_pred + anchor_bias
+            # Decay anchoring gradually so long-horizon forecasts are model-led.
+            bias_decay = np.exp(-0.05 * (i - 1))
+            adjusted_pred = raw_pred + (anchor_bias * bias_decay)
 
             # Adaptive Clamp (relative to PREVIOUS step)
             prev_price = current_df.iloc[-2]['Regional_Price']
@@ -449,7 +515,8 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
             # But wait, adjusted_pred might be huge jump if model is wild.
             # Clamp change from prev_price
             
-            final_pred = np.clip(adjusted_pred, prev_price - adaptive_clamp, prev_price + adaptive_clamp)
+            max_step_change = min(adaptive_clamp, prev_price * 0.12)
+            final_pred = np.clip(adjusted_pred, prev_price - max_step_change, prev_price + max_step_change)
             
             # Scenario specific manual nudges (Post-Model)
             # This ensures differentiation even if model ignores features
