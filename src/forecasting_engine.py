@@ -101,6 +101,14 @@ def preprocess_data(df, training_mode=True):
                 df[col_name] = df.groupby(groups)[col].transform(lambda x: x.rolling(window).mean())
             else:
                 df[col_name] = df[col].rolling(window).mean()
+        
+    # Standard deviation rolling features for volatility
+    for window in [12]:
+        col_name = f'{col}_std_{window}'
+        if groups:
+            df[col_name] = df.groupby(groups)[col].transform(lambda x: x.rolling(window).std())
+        else:
+            df[col_name] = df[col].rolling(window).std()
 
     # Impute missing values without leaking future or cross-series information.
     if groups:
@@ -112,16 +120,15 @@ def preprocess_data(df, training_mode=True):
         df = df.sort_values('Date') if 'Date' in df.columns else df
         df = df.ffill()
 
-    # Cold-start lag/rolling values should not be backfilled from future rows.
-    for col in lag_columns:
-        for lag in [1, 3, 6, 12]:
-            lag_col = f'{col}_lag_{lag}'
-            if lag_col in df.columns:
-                df[lag_col] = df[lag_col].fillna(df[col])
-        for window in [3, 6, 12]:
-            roll_col = f'{col}_rolling_{window}'
-            if roll_col in df.columns:
-                df[roll_col] = df[roll_col].fillna(df[col])
+    # Cold-start handling: Strict 0 filling for missing lags/rolling to avoid leakage.
+    # The notebook strategy is ffill then 0. 
+    # We do NOT backfill from future.
+    # We do NOT fill with current value (which would be leakage if current is target, 
+    # though here they are features. But 'Regional_Price_lag_1' missing means we are at t=0. 
+    # Filling with t=0 price implies persistence. 0 implies unknown.
+    # Notebook says: "avoiding cold-start backfilling".
+    # We will stick to 0 for remaining NaNs as per line 126.
+    pass
 
     df = df.fillna(0)
     
@@ -220,15 +227,32 @@ def prepare_sequences(df, sequence_length=12, target_col='Regional_Price'):
 
     return np.array(X_sequences), np.array(y_sequences), valid_feature_cols, np.array(target_dates)
 
-def build_lstm_model(input_shape):
+def build_model(input_shape, model_type='GRU'):
+    """
+    Builds the GRU/LSTM model based on notebook architecture.
+    """
     model = Sequential()
-    model.add(LSTM(128, return_sequences=True, input_shape=input_shape))
-    model.add(Dropout(0.2))
-    model.add(LSTM(64, return_sequences=False))
-    model.add(Dropout(0.2))
+    
+    if model_type == 'GRU':
+        # GRU Architecture from Notebook (Trial 0-ish High Performance or Default)
+        model.add(GRU(128, return_sequences=True, input_shape=input_shape))
+        model.add(Dropout(0.2))
+        model.add(GRU(64, return_sequences=False))
+        model.add(Dropout(0.2))
+    else:
+        # LSTM Fallback
+        model.add(LSTM(128, return_sequences=True, input_shape=input_shape))
+        model.add(Dropout(0.2))
+        model.add(LSTM(64, return_sequences=False))
+        model.add(Dropout(0.2))
+
     model.add(Dense(32, activation='relu'))
     model.add(Dense(1))
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse', metrics=['mae'])
+    
+    # Optimizer from notebook defaults
+    opt = Adam(learning_rate=0.001)
+    
+    model.compile(optimizer=opt, loss='mse', metrics=['mae'])
     return model
 
 def save_model(model, history, results, model_dir):
@@ -298,7 +322,8 @@ def train_model(df, commodity='cinnamon', epochs=50, batch_size=32, **kwargs):
 
     # 4. Train
     input_shape = (X_train.shape[1], X_train.shape[2])
-    model = build_lstm_model(input_shape)
+    # GRU is the requested architecture
+    model = build_model(input_shape, model_type='GRU')
     
     history = model.fit(
         X_train, y_train,
@@ -386,68 +411,55 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
         train_features = [] # Fallback
 
     # Determine Volatility for Adaptive Clamp
+    # We use the std of the last 12 months as a proxy for "normal volatility"
     last_real_price = start_df['Regional_Price'].iloc[-1]
-    rolling_std = start_df['Regional_Price'].rolling(12).std().iloc[-1]
+    last_12_prices = start_df['Regional_Price'].iloc[-12:]
+    rolling_std = last_12_prices.std()
+    
     if pd.isna(rolling_std) or rolling_std == 0: 
         rolling_std = last_real_price * 0.05
     
-    adaptive_clamp = 2.5 * rolling_std # 2.5 Sigma
-    logger.info(f"Adaptive Clamp set to +/- {adaptive_clamp:.2f}")
+    adaptive_clamp_range = 2.5 * rolling_std 
+    logger.info(f"Adaptive Clamp set to +/- {adaptive_clamp_range:.2f} (Based on 12m StdDev: {rolling_std:.2f})")
 
-    # --- ANCHORING STEP ---
-    # We generate a "Test Prediction" for t+1 using the raw model state
-    # And compare it to what we expect (continuity).
-    # However, since we are doing iterative, we can just calculate the OFFSET
-    # required to make the first prediction match the last real price (or be very close).
-    
-    # Actually, a better approach for "Realism" is to let the first prediction happen,
-    # calculate the Delta (Pred_t1 - Last_Real), and if it's huge, we subtract it.
-    # But strictly speaking, we want: Forecast_t = Raw_Model_t + Bias
-    # Where Bias = Last_Real - Raw_Model_Reconstruction_of_Last_Real?
-    # Or simpler: Bias = Last_Real - Raw_Model_Prediction_t1 (This forces t1 ~= Last_Real, i.e. 0 growth).
-    # Let's try: Bias = Last_Real - (Raw_Model_t1_Prediction).
-    # Then Adjusted_t1 = Raw_Model_t1 + Bias = Last_Real. 
-    # This forces continuity. Then Adjusted_t2 = Raw_Model_t2 + Bias.
-    # This preserves the *shape* and *trend* of the model but shifts the level.
-    
-    # Let's get the raw prediction for t+1 first (using Baseline inputs)
+    # --- ANCHORING ---
+    # Calculate bias correction to prevent jump at t=0
+    # Simulate t+1 with naive assumption (flat) just to check model offset
     temp_df = start_df.copy()
-    # Add dummy row for t+1
     next_date = temp_df.iloc[-1]['Date'] + pd.DateOffset(months=1)
     next_row = temp_df.iloc[-1].copy()
     next_row['Date'] = next_date
+    # Naive assumption for t+1 features: same as t
     temp_df = pd.concat([temp_df, pd.DataFrame([next_row])], ignore_index=True)
-    temp_df = preprocess_data(temp_df, training_mode=False)
+    temp_df = preprocess_data(temp_df, training_mode=False) # Helper to fill lags
     
     raw_pred_t1 = _predict_single_step(model, temp_df.iloc[-SEQUENCE_LENGTH:], train_features)
-    if raw_pred_t1 is None: 
-         raw_pred_t1 = last_real_price
+    if raw_pred_t1 is None: raw_pred_t1 = last_real_price
 
+    # Bias = Real - Model. If Model says 100 but Real is 110, Bias is +10.
+    # We add (+10) to future predictions to shift them up.
     anchor_bias = last_real_price - raw_pred_t1
-    # anchor_bias = float(np.clip(anchor_bias, -adaptive_clamp, adaptive_clamp))
-    logger.info(f"Anchoring Bias Calculated: {anchor_bias:.2f} (Last Real: {last_real_price:.2f} vs Raw Pred: {raw_pred_t1:.2f})")
+    logger.info(f"Anchoring Bias: {anchor_bias:.2f}")
 
     # Scenarios Definition
-    # Optimistic: Price GOES UP (High Demand, Low Supply)
-    # Pessimistic: Price GOES DOWN (Low Demand, High Supply)
     scenarios = {
         'Baseline': {
-            'drift': 1.002, 
+            'drift': 1.002,          # Slight Inflation
             'supply_mod': 1.00,
             'demand_mod': 1.00,
-            'weather_mod': 1.0
+            'weather_amp': 1.0
         },
         'Optimistic': {
-            'drift': 1.005, # Inflation helps price
-            'supply_mod': 0.95, # Scarcity
-            'demand_mod': 1.05, # High Demand
-            'weather_mod': 0.95 # Mild weather (good quality?) Or bad weather (scarcity?) -> Let's assume Scarcity = High Price
+            'drift': 1.005,          # Stronger Market
+            'supply_mod': 0.95,      # Tighter Supply (High Prices)
+            'demand_mod': 1.05,      # High Demand
+            'weather_amp': 0.8       # Mild weather impact
         }, 
         'Pessimistic': {
-            'drift': 0.995, # Deflation?
-            'supply_mod': 1.05, # Oversupply
-            'demand_mod': 0.95, # Low Demand
-            'weather_mod': 1.1 # Volatile weather but somehow low price? Maybe poor quality.
+            'drift': 0.995,          # Weak Market
+            'supply_mod': 1.05,      # Oversupply (Low Prices)
+            'demand_mod': 0.95,      # Low Demand
+            'weather_amp': 1.2       # Volatile weather
         } 
     }
 
@@ -455,6 +467,8 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
 
     for name, params in scenarios.items():
         current_df = start_df.copy()
+        scenario_dates = []
+        scenario_prices = []
         
         # Spread Logic
         last_row = current_df.iloc[-1]
@@ -462,80 +476,103 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
         if 'National_Price' in last_row:
              current_spread = last_row['National_Price'] - last_row['Regional_Price']
 
-        scenario_dates = []
-        scenario_prices = []
-
         for i in range(1, steps + 1):
-            next_date = current_df.iloc[-1]['Date'] + pd.DateOffset(months=1)
+            # 1. Advance Time
+            last_date = current_df.iloc[-1]['Date']
+            next_date = last_date + pd.DateOffset(months=1)
             month_num = next_date.month
             
-            # Project Exogenous
+            # 2. Base Exogenous (Sine Waves & Drifts)
             next_row = current_df.iloc[-1].copy()
-            
-            # Weather Sine Wave
-            base_temp = 28 + 2 * np.sin((month_num - 4) * np.pi / 6)
-            next_row['Temperature'] = base_temp * params['weather_mod']
-            
-            # Economic/Supply/Demand Drift
-            if 'Inflation_Rate' in next_row: next_row['Inflation_Rate'] *= params['drift']
-            if 'Global_Consumption_Volume' in next_row: next_row['Global_Consumption_Volume'] *= params['demand_mod']
-            if 'Local_Production_Volume' in next_row: next_row['Local_Production_Volume'] *= params['supply_mod']
-
-            # Update Time
             next_row['Date'] = next_date
-            next_row['Month'] = next_date
             next_row['Year'] = next_date.year
+            next_row['Month'] = next_date # For legacy
             next_row['Month_num'] = month_num
             next_row['Quarter'] = next_date.quarter
             
-            # Append & Recalc Lags
+            # Weather Simulation (Sine Wave with Inter-annual Randomness approx)
+            # Peak Temp in April/May (Month 4/5), Lowest in Dec/Jan
+            # Sri Lanka: Warm year round, but slight fluctuation.
+            # Base 27C +/- 1.5C.
+            temp_wave = np.sin((month_num - 4) * np.pi / 6) 
+            next_row['Temperature'] = 27 + (1.5 * temp_wave * params['weather_amp'])
+            
+            # Rainfall: Rainy Seasons (May-June, Oct-Nov). Complex, but lets approximate.
+            # Peaks at 5 and 10.
+            rain_wave = np.sin((month_num - 5) * np.pi / 3) # Faster cycle?
+            next_row['Rainfall'] = 200 + (100 * rain_wave * params['weather_amp'])
+
+            # Competitors / Global (Drift)
+            drift_cols = [
+                'Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD',
+                'Global_Consumption_Volume', 'Exchange_Rate', 'Inflation_Rate', 'Fuel_Price'
+            ]
+            for col in drift_cols:
+                if col in next_row:
+                    next_row[col] = next_row[col] * params['drift']
+            
+            # 3. Append to History & Recalculate Features
+            # We must append BEFORE predicting to get Lags/Rolling for 't'
             current_df = pd.concat([current_df, pd.DataFrame([next_row])], ignore_index=True)
+            
+            # Re-run preprocess to fill lags/rolling for the NEW last row
+            # Note: This is computationally creating the whole history again, but safe.
+            # Only need tail for prediction.
             current_df = preprocess_data(current_df, training_mode=False)
             
-            # Predict
-            try:
-                input_sequence = current_df.iloc[-SEQUENCE_LENGTH:]
-                raw_pred = _predict_single_step(model, input_sequence, train_features)
-                if raw_pred is None: raw_pred = current_df.iloc[-2]['Regional_Price']
-            except:
-                 raw_pred = current_df.iloc[-2]['Regional_Price']
+            # 4. Predict
+            input_sequence = current_df.iloc[-SEQUENCE_LENGTH:]
+            raw_pred = _predict_single_step(model, input_sequence, train_features)
+            
+            if raw_pred is None:
+                # Fallback
+                raw_pred = current_df.iloc[-2]['Regional_Price']
 
-            # Apply Anchoring
-            # We decay the bias slowly over time to eventually trust the model? 
-            # Or keep it constant to maintain level shift?
-            # For 12 months, constant is safer to prevent reversion to "bad" mean.
-            # Decay anchoring gradually so long-horizon forecasts are model-led.
-            bias_decay = np.exp(-0.05 * (i - 1))
-            adjusted_pred = raw_pred + (anchor_bias * bias_decay)
-
+            # 5. Apply Logic
+            # Anchor Decay: We trust the model more as we go further out?
+            # Or constant bias? Let's use constant bias for stability.
+            adjusted_pred = raw_pred + anchor_bias
+            
             # Adaptive Clamp (relative to PREVIOUS step)
             prev_price = current_df.iloc[-2]['Regional_Price']
             
-            # We allow the trend, but clamp the *change*
-            # But wait, adjusted_pred might be huge jump if model is wild.
-            # Clamp change from prev_price
+            # Allow max change based on historical volatility OR percentage cap (whichever is tighter)
+            # This prevents massive jumps if volatility was high, but also allows movement.
+            # We use 20% cap as a failsafe.
+            max_step_change = adaptive_clamp_range
+            if prev_price > 0:
+                max_step_change = min(adaptive_clamp_range, prev_price * 0.20)
             
-            max_step_change = min(adaptive_clamp, prev_price * 0.12)
-            final_pred = np.clip(adjusted_pred, prev_price - max_step_change, prev_price + max_step_change)
+            upper_bound = prev_price + max_step_change
+            lower_bound = prev_price - max_step_change
             
-            # Scenario specific manual nudges (Post-Model)
-            # This ensures differentiation even if model ignores features
+            clamped_pred = np.clip(adjusted_pred, lower_bound, upper_bound)
+            
+            # Scenario Nudges (Explicit Manual Override)
             if name == 'Optimistic':
-                final_pred *= 1.005 # +0.5% per month compounded
+                clamped_pred *= 1.002 # Subtle cumulative boost
             elif name == 'Pessimistic':
-                final_pred *= 0.995 # -0.5% per month compounded
-
-            # Update dataframe with Prediction for recursive step
-            idx = len(current_df) - 1
-            current_df.at[idx, 'Regional_Price'] = final_pred
-            if 'National_Price' in current_df.columns:
-                 current_df.at[idx, 'National_Price'] = final_pred + current_spread
+                clamped_pred *= 0.998 # Subtle cumulative drag
             
+            # Hard Floor at 0
+            final_pred = float(max(0.0, clamped_pred))
+
+            # 6. Update the 'Truth' in the DataFrame for the next step
+            # The row we added had 'Regional_Price' from the previous step (copy). 
+            # We must update it to the PREDICTED value so next lag_1 is correct.
+            current_df.iloc[-1, current_df.columns.get_loc('Regional_Price')] = final_pred
+            
+            if 'National_Price' in current_df.columns:
+                 current_df.iloc[-1, current_df.columns.get_loc('National_Price')] = final_pred + current_spread
+
             scenario_dates.append(next_date.strftime("%Y-%m-%d"))
             scenario_prices.append(float(final_pred))
             
         results[name] = {'dates': scenario_dates, 'prices': scenario_prices}
-
+    
+    # "Save" these forecast scenarios to the file system or return?
+    # The API calls this, so returning dict is fine.
+    
     return results
 
 if __name__ == "__main__":
@@ -544,7 +581,20 @@ if __name__ == "__main__":
     for com in commodities:
         data_path = os.path.join(base_dir, 'data', 'processed', f'{com}_prices.csv')
         if os.path.exists(data_path):
-            print(f"Training {com}...")
+            print(f"\n--- Training {com} Model ---")
             df = load_and_prepare_data(data_path)
-            train_model(df, commodity=com, epochs=30)
-            print(f"Done.")
+            # Train for production (30 epochs with EarlyStopping is usually sufficient)
+            model, history, results = train_model(df, commodity=com, epochs=30) 
+            
+            print(f"Generating Verification Forecast...")
+            forecasts = forecast_multistep(model, df, steps=12, commodity=com)
+            
+            # Print a quick summary
+            print(f"Forecast Summary (Next 3 Months - Baseline):")
+            baseline = forecasts.get('Baseline', {})
+            prices = baseline.get('prices', [])[:3]
+            print(f"  {prices}")
+            
+            print(f"✅ {com} model trained and saved.")
+        else:
+            print(f"Skipping {com}, file not found at {data_path}")
