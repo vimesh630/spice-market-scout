@@ -198,15 +198,22 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
             if 'Date' in df.columns:
                 df = df.sort_values('Date')
 
-        # Get the forecast from engine using multistep
-        # Note: forecast_multistep now handles feature extraction dynamically
-        # It yields a tuple of (dates, prices)
+        # Get the forecast from engine using multistep (Phase 3: Scenarios)
+        # Returns dict: {'Baseline': {dates, prices}, 'Optimistic': ..., 'Pessimistic': ...}
+        scenarios = engine.forecast_multistep(model, df, steps=request.months, commodity=commodity)
         
-        forecast_dates, forecast_prices = engine.forecast_multistep(model, df, steps=request.months, commodity=commodity)
-        
-        dates = forecast_dates
-        prices = [round(float(p), 2) for p in forecast_prices]
+        # Backward compatibility: Use Baseline as primary
+        baseline = scenarios.get('Baseline', {})
+        dates = baseline.get('dates', [])
+        prices = [round(float(p), 2) for p in baseline.get('prices', [])]
 
+        # Process other scenarios for response
+        all_scenarios = {}
+        for name, data in scenarios.items():
+            all_scenarios[name] = {
+                "dates": data['dates'],
+                "prices": [round(float(p), 2) for p in data['prices']]
+            }
              
         return {
             "commodity": commodity,
@@ -216,6 +223,7 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
                 "dates": dates,
                 "prices": prices
             },
+            "scenarios": all_scenarios, # New field for frontend
             "history": {
                 "dates": df['Date'].dt.strftime("%Y-%m-%d").tail(90).tolist() if 'Date' in df.columns else [],
                 "prices": df['Regional_Price'].astype(float).tail(90).tolist() if 'Regional_Price' in df.columns else []
@@ -284,17 +292,20 @@ async def compare(request: CompareRequest):
 
             # Generate forecast for this region
             try:
-                # Use multistep forecast
-                forecast_dates, forecast_prices = engine.forecast_multistep(model, df, steps=request.months, commodity=commodity)
+                # Use multistep forecast (Phase 3: Scenarios)
+                scenarios = engine.forecast_multistep(model, df, steps=request.months, commodity=commodity)
                 
-                dates = forecast_dates
-                prices = [round(float(p), 2) for p in forecast_prices]
+                # Use Baseline for comparison
+                baseline = scenarios.get('Baseline', {})
+                dates = baseline.get('dates', [])
+                prices = [round(float(p), 2) for p in baseline.get('prices', [])]
                 
                 comparison_results.append({
                     "region": region,
                     "forecast": {
                         "dates": dates,
-                        "prices": prices
+                        "prices": prices,
+                        "scenarios": {k: {'dates': v['dates'], 'prices': [round(float(p), 2) for p in v['prices']]} for k, v in scenarios.items()}
                     },
                     "history": {
                         "dates": df['Date'].dt.strftime("%Y-%m-%d").tail(90).tolist() if 'Date' in df.columns else [],
