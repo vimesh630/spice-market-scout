@@ -391,10 +391,111 @@ def _predict_single_step(model, df_sequence, train_features):
     pred_scaled = model.predict(X_scaled, verbose=0)
     return scaler_target.inverse_transform(pred_scaled)[0][0]
 
+
+def explain_prediction(model, input_sequence, feature_cols, baseline_price, current_row, scaler_features, scaler_target):
+    """
+    Generates XAI insights by perturbing key drivers and measuring impact.
+    Returns a sorted list of human-readable explanation strings.
+    """
+    explanations = []
+    
+    # Key drivers to test
+    drivers = ['Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Local_Production_Volume', 'National_Price']
+    # Filter for drivers actually present in features
+    valid_drivers = [d for d in drivers if d in feature_cols]
+    
+    impacts = []
+    
+    # Pre-calculate base prediction (passed in)
+    
+    for driver in valid_drivers:
+        # Create a perturbed sequence
+        perturbed_seq = input_sequence.copy()
+        
+        # Find index of driver in feature cols
+        try:
+            feat_idx = feature_cols.index(driver)
+            
+            # Perturb: Add 10% or +1 std dev. 
+            # Since we are working with raw (but filled) sequence before scaling in _predict_single_step wrapper,
+            # we can perturb the raw value in the dataframe slice.
+            
+            # Wait, input_sequence here is the DataFrame slice.
+            original_val = perturbed_seq.iloc[-1][driver]
+            
+            # Perturbation logic:
+            # If value is small, add absolute amount. If large, add percentage.
+            # Simple heuristic: +10% 
+            perturb_amount = original_val * 0.10
+            if perturb_amount == 0: perturb_amount = 1.0 # Fallback
+            
+            # Apply perturbation to the last timestep
+            perturbed_seq.iloc[-1, perturbed_seq.columns.get_loc(driver)] = original_val + perturb_amount
+            
+            # Predict
+            new_pred = _predict_single_step(model, perturbed_seq, feature_cols)
+            
+            if new_pred is not None:
+                impact = new_pred - baseline_price
+                impacts.append((driver, impact, original_val))
+                
+        except Exception as e:
+            continue
+            
+    # Normalize and Create Strings
+    # Sort by absolute impact
+    impacts.sort(key=lambda x: abs(x[1]), reverse=True)
+    
+    top_drivers = impacts[:3] # Top 3
+    
+    for driver, impact, val in top_drivers:
+        # Context Awareness (Simple logic vs Rolling Mean if possible, or just Direction)
+        # We don't have rolling mean easily accessible here without more lookups, 
+        # so let's stick to Direction + Magnitude of Impact.
+        
+        # But user asked: "If Current_Rainfall > Rolling_Avg_Rainfall AND Impact is Negative -> ..."
+        # accessible via current_row (which has rolling stats if we engineered them?)
+        # "Rainfall_rolling_12" exists in our feature set usually.
+        
+        rolling_col = f"{driver}_rolling_12"
+        context_msg = ""
+        
+        if abs(impact) < (baseline_price * 0.005): continue # Ignore negligible impacts (<0.5%)
+
+        direction_str = "raising" if impact > 0 else "lowering"
+        
+        # Check against rolling avg if available
+        if rolling_col in current_row:
+            rolling_val = current_row[rolling_col]
+            if val > rolling_val:
+                state = "High"
+            else:
+                state = "Low"
+            
+            # Refined reasons
+            if driver == 'Temperature' and state == 'High': reason = "Heat Stress"
+            elif driver == 'Rainfall' and state == 'High': reason = "Heavy Rains"
+            elif driver == 'Local_Production_Volume' and state == 'Low': reason = "Supply Scarcity"
+            elif driver == 'Local_Production_Volume' and state == 'High': reason = "Supply Glut"
+            else: reason = f"{state} {driver.replace('_', ' ')}"
+            
+            expl = f"{reason} is {direction_str} prices ({impact:+.2f} LKR)"
+        else:
+            # Fallback
+            expl = f"{driver.replace('_', ' ')} impact is {direction_str} prices ({impact:+.2f} LKR)"
+            
+        explanations.append(expl)
+        
+    if not explanations:
+        explanations.append("Price trend driven by stable market conditions.")
+        
+    return explanations
+
 def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
     """
     PHASE 3: SCENARIO FORECASTING + ADAPTIVE CLAMPING + ANCHORING
     Returns a dictionary of scenarios: {'Baseline': ..., 'Optimistic': ..., 'Pessimistic': ...}
+    With EXPANDED Explainable AI (XAI) insights.
     """
     logger.info(f"Generating Phase 3 Scenarios for {commodity}...")
     
@@ -495,6 +596,7 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
         current_df = start_df.copy()
         scenario_dates = []
         scenario_prices = []
+        scenario_explanations = []
         
         # Spread Logic
         last_row = current_df.iloc[-1]
@@ -570,6 +672,11 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
                 # Fallback
                 raw_pred = current_df.iloc[-2]['Regional_Price']
 
+            # Generate XAI Explanation (Before adjustments to raw model output)
+            # We want to explain why the MODEL predicted what it predicted.
+            explanations = explain_prediction(model, input_sequence, train_features, raw_pred, current_df.iloc[-1], scaler_features, scaler_target)
+            scenario_explanations.append(explanations)
+
             # 5. Apply Logic
             # Anchor Decay: We trust the model more as we go further out?
             # Or constant bias? Let's use constant bias for stability.
@@ -619,7 +726,7 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
             scenario_dates.append(next_date.strftime("%Y-%m-%d"))
             scenario_prices.append(float(final_pred))
             
-        results[name] = {'dates': scenario_dates, 'prices': scenario_prices}
+        results[name] = {'dates': scenario_dates, 'prices': scenario_prices, 'explanations': scenario_explanations}
     
     # "Save" these forecast scenarios to the file system or return?
     # The API calls this, so returning dict is fine.

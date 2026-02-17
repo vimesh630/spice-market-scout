@@ -212,7 +212,8 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
         for name, data in scenarios.items():
             all_scenarios[name] = {
                 "dates": data['dates'],
-                "prices": [round(float(p), 2) for p in data['prices']]
+                "prices": [round(float(p), 2) for p in data['prices']],
+                "explanations": data.get('explanations', [])
             }
              
         return {
@@ -309,7 +310,7 @@ async def compare(request: CompareRequest):
                     "forecast": {
                         "dates": dates,
                         "prices": prices,
-                        "scenarios": {k: {'dates': v['dates'], 'prices': [round(float(p), 2) for p in v['prices']]} for k, v in scenarios.items()}
+                        "scenarios": {k: {'dates': v['dates'], 'prices': [round(float(p), 2) for p in v['prices']], 'explanations': v.get('explanations', [])} for k, v in scenarios.items()}
                     },
                     "history": {
                         "dates": df['Date'].dt.strftime("%Y-%m-%d").tail(90).tolist() if 'Date' in df.columns else [],

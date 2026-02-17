@@ -677,6 +677,7 @@ function App() {
           </div>
 
 
+
           {/* FORECAST DATA TABLE */}
           {!isComparisonMode && forecastData && (
             <div className="card table-card mt-6">
