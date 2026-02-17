@@ -4,6 +4,7 @@ import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
 import { LayoutDashboard, RefreshCw, AlertCircle, Calendar, Sparkles, TrendingUp, TrendingDown, Menu, ChevronLeft, ChevronRight, Layers, Maximize2, ZoomOut, Sun, Moon } from 'lucide-react';
 import './App.css';
 import logo from './assets/logo.png';
+import MarketDrivers from './components/MarketDrivers';
 
 // Configure Axios base URL
 const API_URL = 'http://127.0.0.1:8000';
@@ -32,6 +33,7 @@ function App() {
 
   const [marketIntel, setMarketIntel] = useState(null);
   const [latestPrice, setLatestPrice] = useState(null);
+  const [rawApiData, setRawApiData] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // Zoom State
@@ -62,6 +64,7 @@ function App() {
   // Fetch Metadata and News on Load or Commodity Change
   useEffect(() => {
     setForecastData(null);
+    setRawApiData(null);
     setLatestPrice(null);
     if (!isComparisonMode) setSelectedRegion('');
     setSelectedRegionsMulti([]);
@@ -219,6 +222,7 @@ function App() {
         });
 
         setForecastData(Object.values(mergedData));
+        setRawApiData(response.data);
         setLatestPrice(null); // Comparison has multiple prices
 
       } else {
@@ -251,6 +255,7 @@ function App() {
 
         const combinedData = [...historyData, ...forecastChartData];
         setForecastData(combinedData);
+        setRawApiData(response.data);
         const lastForecast = fPrices[fPrices.length - 1];
         const lastHistory = hPrices[hPrices.length - 1];
         setLatestPrice(lastForecast || lastHistory);
@@ -513,166 +518,173 @@ function App() {
             </div>
           )}
 
-          {/* CHART SECTION */}
-          <div className="card chart-card flex-1 flex flex-col min-h-[400px] mb-6 shadow-md border-0">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-bold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-                {isComparisonMode ? <Layers size={20} className="text-amber-500" /> : <TrendingUp size={20} className="text-emerald-500" />}
-                {isComparisonMode ? 'Regional Price Comparison' : 'Price Forecast'}
-              </h2>
-              {forecastData && (
-                <div className="text-xs flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
-                  <Maximize2 size={14} /> Drag to zoom
-                  <button onClick={zoomOut} className="ml-2 flex items-center gap-1 px-2 py-0.5 rounded transition-colors" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
-                    <ZoomOut size={12} /> Reset
-                  </button>
-                </div>
-              )}
+          {/* CHART + XAI GRID */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6 flex-1" style={{ minHeight: '400px' }}>
+            <div className="lg:col-span-2 card chart-card flex flex-col min-h-[400px] shadow-md border-0">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-lg font-bold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+                  {isComparisonMode ? <Layers size={20} className="text-amber-500" /> : <TrendingUp size={20} className="text-emerald-500" />}
+                  {isComparisonMode ? 'Regional Price Comparison' : 'Price Forecast'}
+                </h2>
+                {forecastData && (
+                  <div className="text-xs flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
+                    <Maximize2 size={14} /> Drag to zoom
+                    <button onClick={zoomOut} className="ml-2 flex items-center gap-1 px-2 py-0.5 rounded transition-colors" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
+                      <ZoomOut size={12} /> Reset
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-1 w-full min-h-0 relative">
+                {forecastData ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    {isComparisonMode ? (
+                      <LineChart
+                        data={forecastData}
+                        margin={{ top: 10, right: 30, left: 20, bottom: 10 }}
+                        onMouseDown={(e) => e && setRefAreaLeft(e.activeLabel)}
+                        onMouseMove={(e) => refAreaLeft && e && setRefAreaRight(e.activeLabel)}
+                        onMouseUp={zoom}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis
+                          allowDataOverflow
+                          domain={[left, right]}
+                          type="category"
+                          dataKey="name"
+                          stroke="#94a3b8"
+                          tick={{ fontSize: 11, fontFamily: 'JetBrains Mono', fill: '#64748b' }}
+                          minTickGap={30}
+                          tickLine={false}
+                          dy={10}
+                        />
+                        <YAxis
+                          allowDataOverflow
+                          domain={['auto', 'auto']}
+                          stroke="#94a3b8"
+                          tickFormatter={(val) => `LKR ${val}`}
+                          tick={{ fontFamily: 'JetBrains Mono', fill: '#64748b', fontSize: 11 }}
+                          tickLine={false}
+                          dx={-10}
+                        />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)', fontFamily: 'JetBrains Mono', fontSize: '12px' }}
+                          itemStyle={{ padding: 0 }}
+                          formatter={(value) => [`LKR ${Math.round(value).toLocaleString()}`]}
+                        />
+                        <Legend wrapperStyle={{ paddingTop: '20px', fontFamily: 'Inter', fontSize: '13px' }} />
+
+                        {selectedRegionsMulti.map((region, idx) => (
+                          <React.Fragment key={region}>
+                            {/* History Line (Solid) */}
+                            <Line
+                              type="monotone"
+                              dataKey={region}
+                              stroke={COLORS[idx % COLORS.length]}
+                              strokeWidth={2.5}
+                              dot={false}
+                              activeDot={{ r: 6 }}
+                            />
+                            {/* Forecast Line (Dashed) */}
+                            <Line
+                              type="monotone"
+                              dataKey={`${region}_Forecast`}
+                              stroke={COLORS[idx % COLORS.length]}
+                              strokeWidth={2.5}
+                              strokeDasharray="5 5"
+                              dot={false}
+                              activeDot={{ r: 6 }}
+                            />
+                          </React.Fragment>
+                        ))}
+                        {refAreaLeft && refAreaRight ? (
+                          <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#8884d8" fillOpacity={0.3} />
+                        ) : null}
+                      </LineChart>
+                    ) : (
+                      <AreaChart
+                        data={forecastData}
+                        margin={{ top: 10, right: 30, left: 10, bottom: 10 }}
+                        onMouseDown={(e) => e && setRefAreaLeft(e.activeLabel)}
+                        onMouseMove={(e) => refAreaLeft && e && setRefAreaRight(e.activeLabel)}
+                        onMouseUp={zoom}
+                      >
+                        <defs>
+                          <linearGradient id="colorMain" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={getThemeColor()} stopOpacity={0.3} />
+                            <stop offset="95%" stopColor={getThemeColor()} stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis
+                          allowDataOverflow
+                          domain={[left, right]}
+                          type="category"
+                          dataKey="name"
+                          stroke="#94a3b8"
+                          tick={{ fontSize: 11, fontFamily: 'JetBrains Mono', fill: '#64748b' }}
+                          minTickGap={30}
+                          tickLine={false}
+                          dy={10}
+                        />
+                        <YAxis
+                          allowDataOverflow
+                          domain={['auto', 'auto']}
+                          stroke="#94a3b8"
+                          tickFormatter={(val) => `LKR ${val}`}
+                          tick={{ fontFamily: 'JetBrains Mono', fill: '#64748b', fontSize: 11 }}
+                          tickLine={false}
+                          dx={-10}
+                        />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)', fontFamily: 'JetBrains Mono', color: '#0f172a' }}
+                          labelStyle={{ color: '#64748b', marginBottom: '5px' }}
+                          formatter={(value) => [`LKR ${Math.round(value).toLocaleString()}`]}
+                        />
+                        <Legend wrapperStyle={{ paddingTop: '20px', fontFamily: 'Inter', fontSize: '13px' }} />
+
+                        <Area
+                          type="monotone"
+                          dataKey="History"
+                          stroke="#64748b"
+                          fill="transparent"
+                          strokeWidth={2}
+                          name="Historical"
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="Forecast"
+                          stroke={getThemeColor()}
+                          fillOpacity={1}
+                          fill="url(#colorMain)"
+                          strokeWidth={3}
+                          activeDot={{ r: 6, strokeWidth: 0 }}
+                          name="Forecast"
+                        />
+                        {refAreaLeft && refAreaRight ? (
+                          <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#8884d8" fillOpacity={0.3} />
+                        ) : null}
+                      </AreaChart>
+                    )}
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="empty-state flex flex-col items-center justify-center h-full text-slate-300">
+                    <div className="bg-slate-100 p-6 rounded-full mb-4">
+                      {isComparisonMode ? <Layers size={48} className="text-slate-400" /> : <LayoutDashboard size={48} className="text-slate-400" />}
+                    </div>
+                    <p className="text-lg font-medium text-slate-500">Ready to Forecast</p>
+                    <p className="text-sm mt-2 max-w-xs text-center text-slate-400">
+                      {isComparisonMode ? 'Select multiple regions to compare price trends.' : 'Select comparison parameters to generate a prediction.'}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="flex-1 w-full min-h-0 relative">
-              {forecastData ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  {isComparisonMode ? (
-                    <LineChart
-                      data={forecastData}
-                      margin={{ top: 10, right: 30, left: 20, bottom: 10 }}
-                      onMouseDown={(e) => e && setRefAreaLeft(e.activeLabel)}
-                      onMouseMove={(e) => refAreaLeft && e && setRefAreaRight(e.activeLabel)}
-                      onMouseUp={zoom}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis
-                        allowDataOverflow
-                        domain={[left, right]}
-                        type="category"
-                        dataKey="name"
-                        stroke="#94a3b8"
-                        tick={{ fontSize: 11, fontFamily: 'JetBrains Mono', fill: '#64748b' }}
-                        minTickGap={30}
-                        tickLine={false}
-                        dy={10}
-                      />
-                      <YAxis
-                        allowDataOverflow
-                        domain={['auto', 'auto']}
-                        stroke="#94a3b8"
-                        tickFormatter={(val) => `LKR ${val}`}
-                        tick={{ fontFamily: 'JetBrains Mono', fill: '#64748b', fontSize: 11 }}
-                        tickLine={false}
-                        dx={-10}
-                      />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)', fontFamily: 'JetBrains Mono', fontSize: '12px' }}
-                        itemStyle={{ padding: 0 }}
-                        formatter={(value) => [`LKR ${Math.round(value).toLocaleString()}`]}
-                      />
-                      <Legend wrapperStyle={{ paddingTop: '20px', fontFamily: 'Inter', fontSize: '13px' }} />
-
-                      {selectedRegionsMulti.map((region, idx) => (
-                        <React.Fragment key={region}>
-                          {/* History Line (Solid) */}
-                          <Line
-                            type="monotone"
-                            dataKey={region}
-                            stroke={COLORS[idx % COLORS.length]}
-                            strokeWidth={2.5}
-                            dot={false}
-                            activeDot={{ r: 6 }}
-                          />
-                          {/* Forecast Line (Dashed) */}
-                          <Line
-                            type="monotone"
-                            dataKey={`${region}_Forecast`}
-                            stroke={COLORS[idx % COLORS.length]}
-                            strokeWidth={2.5}
-                            strokeDasharray="5 5"
-                            dot={false}
-                            activeDot={{ r: 6 }}
-                          />
-                        </React.Fragment>
-                      ))}
-                      {refAreaLeft && refAreaRight ? (
-                        <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#8884d8" fillOpacity={0.3} />
-                      ) : null}
-                    </LineChart>
-                  ) : (
-                    <AreaChart
-                      data={forecastData}
-                      margin={{ top: 10, right: 30, left: 10, bottom: 10 }}
-                      onMouseDown={(e) => e && setRefAreaLeft(e.activeLabel)}
-                      onMouseMove={(e) => refAreaLeft && e && setRefAreaRight(e.activeLabel)}
-                      onMouseUp={zoom}
-                    >
-                      <defs>
-                        <linearGradient id="colorMain" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor={getThemeColor()} stopOpacity={0.3} />
-                          <stop offset="95%" stopColor={getThemeColor()} stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis
-                        allowDataOverflow
-                        domain={[left, right]}
-                        type="category"
-                        dataKey="name"
-                        stroke="#94a3b8"
-                        tick={{ fontSize: 11, fontFamily: 'JetBrains Mono', fill: '#64748b' }}
-                        minTickGap={30}
-                        tickLine={false}
-                        dy={10}
-                      />
-                      <YAxis
-                        allowDataOverflow
-                        domain={['auto', 'auto']}
-                        stroke="#94a3b8"
-                        tickFormatter={(val) => `LKR ${val}`}
-                        tick={{ fontFamily: 'JetBrains Mono', fill: '#64748b', fontSize: 11 }}
-                        tickLine={false}
-                        dx={-10}
-                      />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)', fontFamily: 'JetBrains Mono', color: '#0f172a' }}
-                        labelStyle={{ color: '#64748b', marginBottom: '5px' }}
-                        formatter={(value) => [`LKR ${Math.round(value).toLocaleString()}`]}
-                      />
-                      <Legend wrapperStyle={{ paddingTop: '20px', fontFamily: 'Inter', fontSize: '13px' }} />
-
-                      <Area
-                        type="monotone"
-                        dataKey="History"
-                        stroke="#64748b"
-                        fill="transparent"
-                        strokeWidth={2}
-                        name="Historical"
-                      />
-                      <Area
-                        type="monotone"
-                        dataKey="Forecast"
-                        stroke={getThemeColor()}
-                        fillOpacity={1}
-                        fill="url(#colorMain)"
-                        strokeWidth={3}
-                        activeDot={{ r: 6, strokeWidth: 0 }}
-                        name="Forecast"
-                      />
-                      {refAreaLeft && refAreaRight ? (
-                        <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#8884d8" fillOpacity={0.3} />
-                      ) : null}
-                    </AreaChart>
-                  )}
-                </ResponsiveContainer>
-              ) : (
-                <div className="empty-state flex flex-col items-center justify-center h-full text-slate-300">
-                  <div className="bg-slate-100 p-6 rounded-full mb-4">
-                    {isComparisonMode ? <Layers size={48} className="text-slate-400" /> : <LayoutDashboard size={48} className="text-slate-400" />}
-                  </div>
-                  <p className="text-lg font-medium text-slate-500">Ready to Forecast</p>
-                  <p className="text-sm mt-2 max-w-xs text-center text-slate-400">
-                    {isComparisonMode ? 'Select multiple regions to compare price trends.' : 'Select comparison parameters to generate a prediction.'}
-                  </p>
-                </div>
-              )}
+            {/* XAI MARKET DRIVERS PANEL */}
+            <div className="lg:col-span-1" style={{ minHeight: '400px' }}>
+              <MarketDrivers data={rawApiData} scenario="Baseline" />
             </div>
           </div>
 

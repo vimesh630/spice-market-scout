@@ -365,7 +365,9 @@ def load_artifacts(commodity='cinnamon'):
              with open(enc_path, 'rb') as f: label_encoders = pickle.load(f)
         return model
     except Exception as e:
-        logger.error(f"Error loading artifacts: {e}")
+        import traceback
+        logger.error(f"Error loading artifacts for '{commodity}' from {model_dir}: {e}")
+        traceback.print_exc()
         return None
 
 def _predict_single_step(model, df_sequence, train_features):
