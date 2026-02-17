@@ -533,7 +533,7 @@ def _build_reason_label(driver, state, impact, is_harvest_season):
         return f"{state} {driver.replace('_', ' ')}"
     return driver.replace('_', ' ')
 
-def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
+def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None):
     """
     PHASE 3: SCENARIO FORECASTING + ADAPTIVE CLAMPING + ANCHORING
     Returns a dictionary of scenarios: {'Baseline': ..., 'Optimistic': ..., 'Pessimistic': ...}
@@ -697,14 +697,22 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
                 if col in next_row:
                     next_row[col] = next_row[col] * params['drift']
             
+            # --- What-If Overrides (User Simulation) ---
+            if overrides:
+                for col, pct in overrides.items():
+                    if col in next_row.index:
+                        next_row[col] = next_row[col] * (1 + pct)
+            
             # 3. Append to History & Recalculate Features
             # We must append BEFORE predicting to get Lags/Rolling for 't'
             current_df = pd.concat([current_df, pd.DataFrame([next_row])], ignore_index=True)
             
-            # Re-run preprocess to fill lags/rolling for the NEW last row
-            # Note: This is computationally creating the whole history again, but safe.
-            # Only need tail for prediction.
-            current_df = preprocess_data(current_df, training_mode=False)
+            # Performance: Only preprocess last 60 rows for lag/rolling calculation
+            # This avoids re-processing 1000+ rows every iteration (O(n²) -> O(1)).
+            small_window = current_df.tail(60).copy()
+            processed_window = preprocess_data(small_window, training_mode=False)
+            # Copy computed features (lags, rolling avgs) back to the main DataFrame
+            current_df.iloc[-1] = processed_window.iloc[-1]
             
             # 4. Predict
             input_sequence = current_df.iloc[-SEQUENCE_LENGTH:]

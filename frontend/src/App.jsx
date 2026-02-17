@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea } from 'recharts';
 import { LayoutDashboard, RefreshCw, AlertCircle, Calendar, Sparkles, TrendingUp, TrendingDown, Menu, ChevronLeft, ChevronRight, Layers, Maximize2, ZoomOut, Sun, Moon } from 'lucide-react';
 import './App.css';
 import logo from './assets/logo.png';
 import MarketDrivers from './components/MarketDrivers';
+import SimulationPanel from './components/SimulationPanel';
 
 // Configure Axios base URL
 const API_URL = 'http://127.0.0.1:8000';
@@ -34,6 +35,8 @@ function App() {
   const [marketIntel, setMarketIntel] = useState(null);
   const [latestPrice, setLatestPrice] = useState(null);
   const [rawApiData, setRawApiData] = useState(null);
+  const [featureOverrides, setFeatureOverrides] = useState(null);
+  const [isSimulating, setIsSimulating] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // Zoom State
@@ -60,6 +63,59 @@ function App() {
   }, [isDarkMode]);
 
   const toggleTheme = () => setIsDarkMode(!isDarkMode);
+
+  // --- What-If Simulator: debounced re-fetch ---
+  const debounceRef = useRef(null);
+  useEffect(() => {
+    // Only re-simulate if we already have a forecast and are in single mode
+    if (!forecastData || isComparisonMode || !featureOverrides) return;
+    if (!selectedRegion || !selectedGrade) return;
+
+    setIsSimulating(true);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const response = await axios.post(`${API_URL}/predict?commodity=${selectedCommodity}`, {
+          region: selectedRegion,
+          grade: selectedGrade,
+          months: forecastDate,
+          feature_overrides: featureOverrides
+        });
+
+        const { dates: fDates, prices: fPrices } = response.data.forecast;
+        const { dates: hDates, prices: hPrices } = response.data.history || { dates: [], prices: [] };
+
+        const historyData = hDates.map((date, index) => ({
+          name: date,
+          History: hPrices[index],
+          Forecast: null
+        }));
+
+        if (hDates.length > 0 && fDates.length > 0) {
+          historyData[historyData.length - 1].Forecast = historyData[historyData.length - 1].History;
+        }
+
+        const forecastChartData = fDates.map((date, index) => ({
+          name: date,
+          History: null,
+          Forecast: fPrices[index]
+        }));
+
+        setForecastData([...historyData, ...forecastChartData]);
+        setRawApiData(response.data);
+        const lastForecast = fPrices[fPrices.length - 1];
+        const lastHistory = hPrices[hPrices.length - 1];
+        setLatestPrice(lastForecast || lastHistory);
+      } catch (err) {
+        console.error('Simulation fetch failed:', err);
+      } finally {
+        setIsSimulating(false);
+      }
+    }, 500);
+
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [featureOverrides]);
 
   // Fetch Metadata and News on Load or Commodity Change
   useEffect(() => {
@@ -230,7 +286,8 @@ function App() {
         const response = await axios.post(`${API_URL}/predict?commodity=${selectedCommodity}`, {
           region: selectedRegion,
           grade: selectedGrade,
-          months: forecastDate
+          months: forecastDate,
+          feature_overrides: featureOverrides
         });
 
         const { dates: fDates, prices: fPrices } = response.data.forecast;
@@ -515,6 +572,13 @@ function App() {
                     : '-'}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* WHAT-IF SIMULATOR */}
+          {!isComparisonMode && forecastData && (
+            <div className="mb-6 shrink-0">
+              <SimulationPanel onOverridesChange={setFeatureOverrides} isSimulating={isSimulating} />
             </div>
           )}
 

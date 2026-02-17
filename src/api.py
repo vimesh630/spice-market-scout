@@ -40,6 +40,9 @@ app.add_middleware(
 
 # Global model state
 model = None
+
+# Performance: Model cache to avoid reloading from disk on every request
+MODEL_CACHE = {}
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 data_path = os.path.join(BASE_DIR, "data", "processed", "spice_prices.csv")
 
@@ -49,6 +52,7 @@ class PredictRequest(BaseModel):
     region: str
     grade: str
     months: int = 6
+    feature_overrides: Optional[Dict[str, float]] = None
 
 class RetrainRequest(BaseModel):
     epochs: int = 10
@@ -156,8 +160,13 @@ async def get_metadata(commodity: str = 'cinnamon'):
 @app.post("/predict")
 async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
     """Generate price forecast"""
-    # Load model for specific commodity
-    model = engine.load_artifacts(commodity)
+    # Load model for specific commodity (with caching)
+    if commodity in MODEL_CACHE:
+        model = MODEL_CACHE[commodity]
+    else:
+        model = engine.load_artifacts(commodity)
+        if model is not None:
+            MODEL_CACHE[commodity] = model
     if model is None:
         raise HTTPException(status_code=503, detail=f"Model for {commodity} not found. Please train first.")
             
@@ -200,7 +209,7 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
 
         # Get the forecast from engine using multistep (Phase 3: Scenarios)
         # Returns dict: {'Baseline': {dates, prices}, 'Optimistic': ..., 'Pessimistic': ...}
-        scenarios = engine.forecast_multistep(model, df, steps=request.months, commodity=commodity)
+        scenarios = engine.forecast_multistep(model, df, steps=request.months, commodity=commodity, overrides=request.feature_overrides)
         
         # Backward compatibility: Use Baseline as primary
         baseline = scenarios.get('Baseline', {})
@@ -246,8 +255,13 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
 async def compare(request: CompareRequest):
     """Generate price forecast comparison for multiple regions"""
     commodity = request.commodity
-    # Load model for specific commodity
-    model = engine.load_artifacts(commodity)
+    # Load model for specific commodity (with caching)
+    if commodity in MODEL_CACHE:
+        model = MODEL_CACHE[commodity]
+    else:
+        model = engine.load_artifacts(commodity)
+        if model is not None:
+            MODEL_CACHE[commodity] = model
     if model is None:
         raise HTTPException(status_code=503, detail=f"Model for {commodity} not found. Please train first.")
             
