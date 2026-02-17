@@ -392,104 +392,144 @@ def _predict_single_step(model, df_sequence, train_features):
     return scaler_target.inverse_transform(pred_scaled)[0][0]
 
 
-def explain_prediction(model, input_sequence, feature_cols, baseline_price, current_row, scaler_features, scaler_target):
+def _get_harvest_months(commodity):
+    """Returns harvest peak months for each commodity."""
+    harvest_map = {
+        'cinnamon': [5, 6, 11, 12],
+        'clove': [12, 1, 2],
+        'pepper': [5, 6, 7],
+    }
+    return harvest_map.get(commodity.lower(), [])
+
+
+def explain_prediction(model, input_sequence, feature_cols, baseline_price, current_row, scaler_features, scaler_target, month_num=None, commodity='cinnamon'):
     """
-    Generates XAI insights by perturbing key drivers and measuring impact.
-    Returns a sorted list of human-readable explanation strings.
+    Generates XAI insights using Perturbation-Based Feature Importance.
+    Returns a sorted list of human-readable explanation strings with
+    influence scores (percentage contribution) and context-aware labels.
     """
-    explanations = []
-    
     # Key drivers to test
     drivers = ['Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Local_Production_Volume', 'National_Price']
-    # Filter for drivers actually present in features
     valid_drivers = [d for d in drivers if d in feature_cols]
-    
-    impacts = []
-    
-    # Pre-calculate base prediction (passed in)
-    
+
+    impacts = []  # (driver_name, impact_lkr, original_value)
+
     for driver in valid_drivers:
-        # Create a perturbed sequence
-        perturbed_seq = input_sequence.copy()
-        
-        # Find index of driver in feature cols
         try:
-            feat_idx = feature_cols.index(driver)
-            
-            # Perturb: Add 10% or +1 std dev. 
-            # Since we are working with raw (but filled) sequence before scaling in _predict_single_step wrapper,
-            # we can perturb the raw value in the dataframe slice.
-            
-            # Wait, input_sequence here is the DataFrame slice.
+            perturbed_seq = input_sequence.copy()
             original_val = perturbed_seq.iloc[-1][driver]
-            
-            # Perturbation logic:
-            # If value is small, add absolute amount. If large, add percentage.
-            # Simple heuristic: +10% 
+
+            # Perturbation: +10% of value (fallback to +1.0 for zero values)
             perturb_amount = original_val * 0.10
-            if perturb_amount == 0: perturb_amount = 1.0 # Fallback
-            
-            # Apply perturbation to the last timestep
+            if perturb_amount == 0:
+                perturb_amount = 1.0
+
             perturbed_seq.iloc[-1, perturbed_seq.columns.get_loc(driver)] = original_val + perturb_amount
-            
-            # Predict
+
             new_pred = _predict_single_step(model, perturbed_seq, feature_cols)
-            
             if new_pred is not None:
                 impact = new_pred - baseline_price
                 impacts.append((driver, impact, original_val))
-                
-        except Exception as e:
+        except Exception:
             continue
-            
-    # Normalize and Create Strings
-    # Sort by absolute impact
-    impacts.sort(key=lambda x: abs(x[1]), reverse=True)
-    
-    top_drivers = impacts[:3] # Top 3
-    
-    for driver, impact, val in top_drivers:
-        # Context Awareness (Simple logic vs Rolling Mean if possible, or just Direction)
-        # We don't have rolling mean easily accessible here without more lookups, 
-        # so let's stick to Direction + Magnitude of Impact.
-        
-        # But user asked: "If Current_Rainfall > Rolling_Avg_Rainfall AND Impact is Negative -> ..."
-        # accessible via current_row (which has rolling stats if we engineered them?)
-        # "Rainfall_rolling_12" exists in our feature set usually.
-        
-        rolling_col = f"{driver}_rolling_12"
-        context_msg = ""
-        
-        if abs(impact) < (baseline_price * 0.005): continue # Ignore negligible impacts (<0.5%)
 
-        direction_str = "raising" if impact > 0 else "lowering"
-        
-        # Check against rolling avg if available
+    if not impacts:
+        return ["Price trend driven by stable market conditions."]
+
+    # --- Normalize: Influence Score (percentage contribution) ---
+    total_abs_impact = sum(abs(imp) for _, imp, _ in impacts)
+    if total_abs_impact == 0:
+        return ["Price trend driven by stable market conditions."]
+
+    # Sort by absolute impact descending
+    impacts.sort(key=lambda x: abs(x[1]), reverse=True)
+    top_drivers = impacts[:3]
+
+    # Harvest month lookup for seasonal context
+    harvest_months = _get_harvest_months(commodity)
+    is_harvest_season = month_num in harvest_months if month_num else False
+
+    explanations = []
+    for driver, impact, val in top_drivers:
+        # Skip negligible impacts (<0.5% of baseline)
+        if abs(impact) < (baseline_price * 0.005):
+            continue
+
+        influence_pct = (abs(impact) / total_abs_impact) * 100
+        direction_word = "up" if impact > 0 else "down"
+
+        # --- Context Awareness via Rolling Average ---
+        rolling_col = f"{driver}_rolling_12"
+        state = None  # "High" or "Low" relative to rolling avg
         if rolling_col in current_row:
             rolling_val = current_row[rolling_col]
-            if val > rolling_val:
-                state = "High"
-            else:
-                state = "Low"
-            
-            # Refined reasons
-            if driver == 'Temperature' and state == 'High': reason = "Heat Stress"
-            elif driver == 'Rainfall' and state == 'High': reason = "Heavy Rains"
-            elif driver == 'Local_Production_Volume' and state == 'Low': reason = "Supply Scarcity"
-            elif driver == 'Local_Production_Volume' and state == 'High': reason = "Supply Glut"
-            else: reason = f"{state} {driver.replace('_', ' ')}"
-            
-            expl = f"{reason} is {direction_str} prices ({impact:+.2f} LKR)"
-        else:
-            # Fallback
-            expl = f"{driver.replace('_', ' ')} impact is {direction_str} prices ({impact:+.2f} LKR)"
-            
+            if rolling_val != 0:  # Avoid division by zero edge case
+                state = "High" if val > rolling_val else "Low"
+
+        # --- Build context-aware reason label ---
+        reason = _build_reason_label(driver, state, impact, is_harvest_season)
+
+        expl = f"Price driven {direction_word} by {reason} ({impact:+.0f} LKR, {influence_pct:.0f}% influence)"
         explanations.append(expl)
-        
+
     if not explanations:
         explanations.append("Price trend driven by stable market conditions.")
-        
+
     return explanations
+
+
+def _build_reason_label(driver, state, impact, is_harvest_season):
+    """
+    Generates a human-readable reason label using the driver name,
+    its state relative to rolling average, and seasonal context.
+    """
+    # Production-specific labels with seasonal awareness
+    if driver == 'Local_Production_Volume':
+        if state == 'Low' and impact > 0:
+            if is_harvest_season:
+                return "Seasonal Harvest Scarcity"
+            return "Supply Scarcity"
+        elif state == 'Low' and impact < 0:
+            return "Low Production"
+        elif state == 'High' and impact < 0:
+            if is_harvest_season:
+                return "Harvest Season Glut"
+            return "Supply Glut"
+        elif state == 'High' and impact > 0:
+            return "High Production"
+        return "Production Volume"
+
+    # Weather labels
+    if driver == 'Temperature':
+        if state == 'High': return "Heat Stress"
+        if state == 'Low': return "Cooler Weather"
+        return "Temperature Shift"
+
+    if driver == 'Rainfall':
+        if state == 'High': return "Heavy Rainfall"
+        if state == 'Low': return "Drought Conditions"
+        return "Rainfall Change"
+
+    # Economic labels
+    if driver == 'Exchange_Rate':
+        if state == 'High': return "Weak Currency"
+        if state == 'Low': return "Strong Currency"
+        return "Exchange Rate Shift"
+
+    if driver == 'Inflation_Rate':
+        if state == 'High': return "Rising Inflation"
+        if state == 'Low': return "Low Inflation"
+        return "Inflation Change"
+
+    if driver == 'National_Price':
+        if state == 'High': return "National Market Pressure"
+        if state == 'Low': return "Weak National Demand"
+        return "National Price Movement"
+
+    # Generic fallback
+    if state:
+        return f"{state} {driver.replace('_', ' ')}"
+    return driver.replace('_', ' ')
 
 def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
     """
@@ -674,7 +714,7 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon'):
 
             # Generate XAI Explanation (Before adjustments to raw model output)
             # We want to explain why the MODEL predicted what it predicted.
-            explanations = explain_prediction(model, input_sequence, train_features, raw_pred, current_df.iloc[-1], scaler_features, scaler_target)
+            explanations = explain_prediction(model, input_sequence, train_features, raw_pred, current_df.iloc[-1], scaler_features, scaler_target, month_num=month_num, commodity=commodity)
             scenario_explanations.append(explanations)
 
             # 5. Apply Logic
