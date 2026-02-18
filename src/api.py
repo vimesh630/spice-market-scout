@@ -169,7 +169,7 @@ async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
         artifacts = engine.load_artifacts(commodity)
         if artifacts is not None:
             MODEL_CACHE[commodity] = artifacts
-            model = artifacts['model']
+            model = engine.set_active_artifacts(artifacts)
         else:
             model = None
     if model is None:
@@ -269,7 +269,7 @@ async def compare(request: CompareRequest):
         artifacts = engine.load_artifacts(commodity)
         if artifacts is not None:
             MODEL_CACHE[commodity] = artifacts
-            model = artifacts['model']
+            model = engine.set_active_artifacts(artifacts)
         else:
             model = None
     if model is None:
