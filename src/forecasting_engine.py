@@ -407,38 +407,69 @@ def _get_harvest_months(commodity):
 def explain_prediction(model, input_sequence, feature_cols, baseline_price, current_row, scaler_features, scaler_target, month_num=None, commodity='cinnamon'):
     """
     Generates XAI insights using Perturbation-Based Feature Importance.
-    Returns a sorted list of human-readable explanation strings with
-    influence scores (percentage contribution) and context-aware labels.
+    OPTIMIZED: Uses Vectorized Batch Prediction (1 model.predict() call
+    instead of N sequential calls, one per driver).
     """
     # Key drivers to test
     drivers = ['Temperature', 'Rainfall', 'Exchange_Rate', 'Inflation_Rate', 'Local_Production_Volume', 'National_Price']
     valid_drivers = [d for d in drivers if d in feature_cols]
 
-    impacts = []  # (driver_name, impact_lkr, original_value)
-
-    for driver in valid_drivers:
-        try:
-            perturbed_seq = input_sequence.copy()
-            original_val = perturbed_seq.iloc[-1][driver]
-
-            # Perturbation: +10% of value (fallback to +1.0 for zero values)
-            perturb_amount = original_val * 0.10
-            if perturb_amount == 0:
-                perturb_amount = 1.0
-
-            perturbed_seq.iloc[-1, perturbed_seq.columns.get_loc(driver)] = original_val + perturb_amount
-
-            new_pred = _predict_single_step(model, perturbed_seq, feature_cols)
-            if new_pred is not None:
-                impact = new_pred - baseline_price
-                impacts.append((driver, impact, original_val))
-        except Exception:
-            continue
-
-    if not impacts:
+    if not valid_drivers:
         return ["Price trend driven by stable market conditions."]
 
-    # --- Normalize: Influence Score (percentage contribution) ---
+    # --- 1. Prepare Base Input (once) ---
+    seq_df = input_sequence.copy()
+    for col in feature_cols:
+        if col not in seq_df.columns:
+            seq_df[col] = 0
+
+    base_values = seq_df[feature_cols].values
+    # Handle padding if sequence is too short
+    if base_values.shape[0] < SEQUENCE_LENGTH:
+        pad_len = SEQUENCE_LENGTH - base_values.shape[0]
+        padding = np.repeat(base_values[0].reshape(1, -1), pad_len, axis=0)
+        base_values = np.vstack([padding, base_values])
+    base_values = base_values[-SEQUENCE_LENGTH:]  # Ensure exact length
+
+    # --- 2. Build Batch of Perturbations (data-prep loop, no predictions) ---
+    batch_inputs = []
+    driver_info = []  # (driver_name, original_value)
+
+    for driver in valid_drivers:
+        col_idx = feature_cols.index(driver)
+        perturbed = base_values.copy()
+
+        orig_val = perturbed[-1, col_idx]
+        perturb_amt = orig_val * 0.10 if orig_val != 0 else 1.0
+        perturbed[-1, col_idx] += perturb_amt
+
+        batch_inputs.append(perturbed)
+        driver_info.append((driver, orig_val))
+
+    if not batch_inputs:
+        return ["Price trend driven by stable market conditions."]
+
+    # --- 3. Stack, Scale, and Predict in ONE call ---
+    X_batch = np.array(batch_inputs)  # Shape: (N_drivers, SEQUENCE_LENGTH, N_features)
+    N, T, F = X_batch.shape
+
+    # Safety check: feature count must match scaler
+    if hasattr(scaler_features, 'n_features_in_') and F != scaler_features.n_features_in_:
+        return ["Complex market factors (Feature Mismatch)"]
+
+    X_flat = X_batch.reshape(-1, F)
+    X_scaled = scaler_features.transform(X_flat).reshape(N, T, F)
+
+    preds_scaled = model.predict(X_scaled, verbose=0)
+    preds_real = scaler_target.inverse_transform(preds_scaled).flatten()
+
+    # --- 4. Calculate Impacts from batch results ---
+    impacts = []  # (driver_name, impact_lkr, original_value)
+    for i, (driver, orig_val) in enumerate(driver_info):
+        impact = preds_real[i] - baseline_price
+        impacts.append((driver, impact, orig_val))
+
+    # --- 5. Format Explanations (same logic as before) ---
     total_abs_impact = sum(abs(imp) for _, imp, _ in impacts)
     if total_abs_impact == 0:
         return ["Price trend driven by stable market conditions."]
@@ -465,7 +496,7 @@ def explain_prediction(model, input_sequence, feature_cols, baseline_price, curr
         state = None  # "High" or "Low" relative to rolling avg
         if rolling_col in current_row:
             rolling_val = current_row[rolling_col]
-            if rolling_val != 0:  # Avoid division by zero edge case
+            if rolling_val != 0:
                 state = "High" if val > rolling_val else "Low"
 
         # --- Build context-aware reason label ---
@@ -635,7 +666,10 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None
     results = {}
 
     for name, params in scenarios.items():
-        current_df = start_df.copy()
+        # OPTIMIZATION 1: Buffer Windowing — use only last 150 rows.
+        # 150 rows is enough for 12-month rolling averages while being
+        # much faster than copying the full 1000+ row DataFrame.
+        current_df = start_df.tail(150).copy().reset_index(drop=True)
         scenario_dates = []
         scenario_prices = []
         scenario_explanations = []
@@ -707,9 +741,10 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None
             # We must append BEFORE predicting to get Lags/Rolling for 't'
             current_df = pd.concat([current_df, pd.DataFrame([next_row])], ignore_index=True)
             
-            # Performance: Only preprocess last 60 rows for lag/rolling calculation
-            # This avoids re-processing 1000+ rows every iteration (O(n²) -> O(1)).
-            small_window = current_df.tail(60).copy()
+            # OPTIMIZATION 1b: Sliding window for feature engineering.
+            # Pass only the last 150 rows to preprocess_data (covers 12-month
+            # rolling averages), then copy computed features back to the last row.
+            small_window = current_df.tail(150).copy()
             processed_window = preprocess_data(small_window, training_mode=False)
             # Copy computed features (lags, rolling avgs) back to the main DataFrame
             current_df.iloc[-1] = processed_window.iloc[-1]
@@ -722,9 +757,12 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None
                 # Fallback
                 raw_pred = current_df.iloc[-2]['Regional_Price']
 
-            # Generate XAI Explanation (Before adjustments to raw model output)
-            # We want to explain why the MODEL predicted what it predicted.
-            explanations = explain_prediction(model, input_sequence, train_features, raw_pred, current_df.iloc[-1], scaler_features, scaler_target, month_num=month_num, commodity=commodity)
+            # OPTIMIZATION 2: Targeted XAI — only compute for Baseline.
+            # This saves 66% of XAI compute by skipping Optimistic/Pessimistic.
+            if name == 'Baseline':
+                explanations = explain_prediction(model, input_sequence, train_features, raw_pred, current_df.iloc[-1], scaler_features, scaler_target, month_num=month_num, commodity=commodity)
+            else:
+                explanations = []
             scenario_explanations.append(explanations)
 
             # 5. Apply Logic
