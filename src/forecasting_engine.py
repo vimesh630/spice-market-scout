@@ -681,10 +681,10 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None
     results = {}
 
     for name, params in scenarios.items():
-        # OPTIMIZATION 1: Buffer Windowing — use only last 150 rows.
-        # 150 rows is enough for 12-month rolling averages while being
-        # much faster than copying the full 1000+ row DataFrame.
-        current_df = start_df.tail(150).copy().reset_index(drop=True)
+        # OPTIMIZATION 1: Buffer Windowing — use last 1000 rows.
+        # 1000 rows guarantees stable 12-month rolling averages even for
+        # sparse regions (Clove/Pepper) while still being fast (milliseconds).
+        current_df = start_df.tail(1000).copy().reset_index(drop=True)
         scenario_dates = []
         scenario_prices = []
         scenario_explanations = []
@@ -757,9 +757,9 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None
             current_df = pd.concat([current_df, pd.DataFrame([next_row])], ignore_index=True)
             
             # OPTIMIZATION 1b: Sliding window for feature engineering.
-            # Pass only the last 150 rows to preprocess_data (covers 12-month
-            # rolling averages), then copy computed features back to the last row.
-            small_window = current_df.tail(150).copy()
+            # Pass last 1000 rows to preprocess_data to ensure 12-month rolling
+            # averages are stable for sparse regions, then copy features back.
+            small_window = current_df.tail(1000).copy()
             processed_window = preprocess_data(small_window, training_mode=False)
             # Copy computed features (lags, rolling avgs) back to the main DataFrame
             current_df.iloc[-1] = processed_window.iloc[-1]
