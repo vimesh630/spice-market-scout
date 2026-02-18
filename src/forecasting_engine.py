@@ -363,12 +363,27 @@ def load_artifacts(commodity='cinnamon'):
         enc_path = os.path.join(model_dir, 'label_encoders.pkl')
         if os.path.exists(enc_path):
              with open(enc_path, 'rb') as f: label_encoders = pickle.load(f)
-        return model
+        # Return full artifacts dict for caching (fixes global state pollution)
+        return {
+            'model': model,
+            'scaler_features': scaler_features,
+            'scaler_target': scaler_target,
+            'label_encoders': label_encoders
+        }
     except Exception as e:
         import traceback
         logger.error(f"Error loading artifacts for '{commodity}' from {model_dir}: {e}")
         traceback.print_exc()
         return None
+
+def set_active_artifacts(artifacts):
+    """Force-update global scalers and encoders from a cached artifacts dict.
+    This fixes the 'Unseen Label' bug when switching between commodities."""
+    global scaler_features, scaler_target, label_encoders
+    scaler_features = artifacts['scaler_features']
+    scaler_target = artifacts['scaler_target']
+    label_encoders = artifacts['label_encoders']
+    return artifacts['model']
 
 def _predict_single_step(model, df_sequence, train_features):
     df_sequence = df_sequence.copy()

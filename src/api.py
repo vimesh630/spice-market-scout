@@ -161,12 +161,17 @@ async def get_metadata(commodity: str = 'cinnamon'):
 async def predict(request: PredictRequest, commodity: str = 'cinnamon'):
     """Generate price forecast"""
     # Load model for specific commodity (with caching)
+    # Cache stores FULL artifacts dict, not just model, to fix state pollution
     if commodity in MODEL_CACHE:
-        model = MODEL_CACHE[commodity]
+        artifacts = MODEL_CACHE[commodity]
+        model = engine.set_active_artifacts(artifacts)
     else:
-        model = engine.load_artifacts(commodity)
-        if model is not None:
-            MODEL_CACHE[commodity] = model
+        artifacts = engine.load_artifacts(commodity)
+        if artifacts is not None:
+            MODEL_CACHE[commodity] = artifacts
+            model = artifacts['model']
+        else:
+            model = None
     if model is None:
         raise HTTPException(status_code=503, detail=f"Model for {commodity} not found. Please train first.")
             
@@ -256,12 +261,17 @@ async def compare(request: CompareRequest):
     """Generate price forecast comparison for multiple regions"""
     commodity = request.commodity
     # Load model for specific commodity (with caching)
+    # Cache stores FULL artifacts dict, not just model, to fix state pollution
     if commodity in MODEL_CACHE:
-        model = MODEL_CACHE[commodity]
+        artifacts = MODEL_CACHE[commodity]
+        model = engine.set_active_artifacts(artifacts)
     else:
-        model = engine.load_artifacts(commodity)
-        if model is not None:
-            MODEL_CACHE[commodity] = model
+        artifacts = engine.load_artifacts(commodity)
+        if artifacts is not None:
+            MODEL_CACHE[commodity] = artifacts
+            model = artifacts['model']
+        else:
+            model = None
     if model is None:
         raise HTTPException(status_code=503, detail=f"Model for {commodity} not found. Please train first.")
             

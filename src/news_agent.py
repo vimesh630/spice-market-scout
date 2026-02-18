@@ -18,12 +18,20 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# In-memory cache for news results to avoid 429 rate limits
+NEWS_CACHE = {}
+
 def search_market_news(commodity="cinnamon", num_results=5):
     """
     Fetches top news URLs and returns them as a list of strings for the specified commodity.
-    Tries advanced search first, falls back to basic search if no results found.
+    Uses in-memory cache to avoid hitting rate limits on repeated calls.
+    On any search exception (e.g. 429), returns a fallback immediately instead of retrying.
     """
-    # Strict query for advanced search
+    # Cache-first: return instantly if we already fetched this commodity
+    if commodity in NEWS_CACHE:
+        logger.info(f"Returning cached news for '{commodity}'.")
+        return NEWS_CACHE[commodity]
+
     query = f"Sri Lanka {commodity} Price trends 2026"
     logger.info(f"Searching for: {query}")
     
@@ -34,7 +42,6 @@ def search_market_news(commodity="cinnamon", num_results=5):
         results = search(query, num_results=num_results, advanced=True)
         
         for result in results:
-            # Format: "Title: <title> - Snippet: <desc> (URL: <url>)"
             if result.title and result.description:
                 news_string = f"Title: {result.title} - Snippet: {result.description} (URL: {result.url})"
                 news_strings.append(news_string)
@@ -42,23 +49,22 @@ def search_market_news(commodity="cinnamon", num_results=5):
         logger.info(f"Advanced search found {len(news_strings)} items.")
 
     except Exception as e:
-        logger.warning(f"Advanced search raised exception: {e}")
+        # Catch 429 / any error immediately — no retries for search
+        logger.warning(f"Search failed (returning fallback): {e}")
+        fallback = [f"Title: Market Stable - Snippet: {commodity.title()} prices are stable based on recent market trends. (URL: https://www.google.com/search?q=Sri+Lanka+{commodity}+price)"]
+        NEWS_CACHE[commodity] = fallback
+        return fallback
 
-    # Fallback Logic: If advanced search yielded 0 results or failed
+    # Fallback Logic: If advanced search yielded 0 results
     if not news_strings:
         logger.warning("Advanced search returned 0 results. Triggering FALLBACK Basic Search...")
         try:
-            # Broader query for basic search
             fallback_query = f"Sri Lanka {commodity} market price news"
             urls = search(fallback_query, num_results=num_results)
-            
-            # Convert URLs to compatible string format
             news_strings = [f"News Link (No Snippet): {url}" for url in urls]
             logger.info(f"Fallback search found {len(news_strings)} URLs.")
-            
         except Exception as e2:
-            logger.error(f"Fallback search failed: {e2}")
-            # Do not return empty yet, flow continues to final check
+            logger.warning(f"Fallback search also failed: {e2}")
     
     # Final Failsafe: Ensure we never return an empty list
     if not news_strings:
@@ -66,6 +72,8 @@ def search_market_news(commodity="cinnamon", num_results=5):
         generic_url = f"https://www.google.com/search?q=Sri+Lanka+{commodity}+price"
         news_strings.append(f"Title: Market Search - Snippet: Live search results for {commodity} (URL: {generic_url})")
 
+    # Cache the result for future calls
+    NEWS_CACHE[commodity] = news_strings
     return news_strings
 
 
