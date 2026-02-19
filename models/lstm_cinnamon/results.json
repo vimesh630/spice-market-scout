@@ -1,23 +1,11 @@
 {
-    "mae": 201.00596578251503,
-    "rmse": 259.9413530157483,
-    "r2": 0.7788971677139842,
-    "best_params": {
-        "units1": 128,
-        "units2": 256,
-        "dropout1": 0.4,
-        "dropout2": 0.5,
-        "dense_units": 128,
-        "learning_rate": 0.000865136412117882,
-        "layer_type": "GRU",
-        "use_batch_norm": false,
-        "optimizer": "rmsprop"
-    },
-    "tuning_method": "optuna",
-    "tuning_used": true,
-    "epochs_trained": 55,
-    "final_train_loss": 0.0014654905535280704,
-    "final_val_loss": 0.002321378095075488,
+    "mae": 338.0438624958296,
+    "rmse": 389.8255295440686,
+    "r2": 0.39995897303692807,
+    "directional_accuracy": 0.8892857142857142,
+    "epochs_trained": 42,
+    "final_train_loss": 0.04121410846710205,
+    "final_val_loss": 0.11378113925457001,
     "feature_cols": [
         "Grade_encoded",
         "Region_encoded",
@@ -63,7 +51,31 @@
         "Rainfall_lag_12",
         "Rainfall_rolling_3",
         "Rainfall_rolling_6",
-        "Rainfall_rolling_12"
+        "Rainfall_rolling_12",
+        "Exchange_Rate_lag_1",
+        "Exchange_Rate_lag_3",
+        "Exchange_Rate_lag_6",
+        "Exchange_Rate_lag_12",
+        "Exchange_Rate_rolling_3",
+        "Exchange_Rate_rolling_6",
+        "Exchange_Rate_rolling_12",
+        "Inflation_Rate_lag_1",
+        "Inflation_Rate_lag_3",
+        "Inflation_Rate_lag_6",
+        "Inflation_Rate_lag_12",
+        "Inflation_Rate_rolling_3",
+        "Inflation_Rate_rolling_6",
+        "Inflation_Rate_rolling_12"
     ],
-    "tuning_results": []
+    "best_params": {
+        "model_type": "GRU",
+        "units1": 128,
+        "units2": 256,
+        "dropout1": 0.4,
+        "dropout2": 0.5,
+        "dense_units": 128,
+        "learning_rate": 0.000865136412117882,
+        "use_batch_norm": false,
+        "optimizer": "rmsprop"
+    }
 }

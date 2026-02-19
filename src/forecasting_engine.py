@@ -83,7 +83,12 @@ def preprocess_data(df, training_mode=True):
 
     # Lag Features (Strictly Historical)
     groups = [c for c in ['Grade', 'Region'] if c in df.columns]
-    lag_columns = ['Regional_Price', 'National_Price', 'Temperature', 'Rainfall', 'Exchange_Rate']
+    # Extended lag columns to include international prices (matching notebook approach)
+    lag_columns = [
+        'Regional_Price', 'National_Price', 'Temperature', 'Rainfall',
+        'Indonesia_Price_in_USD', 'Madagascar_Price_in_USD', 'Tanzania_Price_in_USD',
+        'Exchange_Rate', 'Inflation_Rate'
+    ]
     lag_columns = [c for c in lag_columns if c in df.columns]
 
     for col in lag_columns:
@@ -227,30 +232,36 @@ def prepare_sequences(df, sequence_length=12, target_col='Regional_Price'):
 
     return np.array(X_sequences), np.array(y_sequences), valid_feature_cols, np.array(target_dates)
 
-def build_model(input_shape, model_type='GRU'):
+def build_model(input_shape, model_type='GRU', units1=128, units2=64,
+                dropout1=0.2, dropout2=0.2, dense_units=32,
+                learning_rate=0.001, use_batch_norm=False, optimizer='adam'):
     """
-    Builds the GRU/LSTM model based on notebook architecture.
+    Builds the GRU/LSTM model with configurable hyperparameters.
+    Accepts params from Optuna tuning results or uses notebook defaults.
     """
     model = Sequential()
     
-    if model_type == 'GRU':
-        # GRU Architecture from Notebook (Trial 0-ish High Performance or Default)
-        model.add(GRU(128, return_sequences=True, input_shape=input_shape))
-        model.add(Dropout(0.2))
-        model.add(GRU(64, return_sequences=False))
-        model.add(Dropout(0.2))
-    else:
-        # LSTM Fallback
-        model.add(LSTM(128, return_sequences=True, input_shape=input_shape))
-        model.add(Dropout(0.2))
-        model.add(LSTM(64, return_sequences=False))
-        model.add(Dropout(0.2))
+    layer_cls = GRU if model_type == 'GRU' else LSTM
+    
+    model.add(layer_cls(units1, return_sequences=True, input_shape=input_shape))
+    if use_batch_norm:
+        model.add(BatchNormalization())
+    model.add(Dropout(dropout1))
+    model.add(layer_cls(units2, return_sequences=False))
+    if use_batch_norm:
+        model.add(BatchNormalization())
+    model.add(Dropout(dropout2))
 
-    model.add(Dense(32, activation='relu'))
+    model.add(Dense(dense_units, activation='relu'))
     model.add(Dense(1))
     
-    # Optimizer from notebook defaults
-    opt = Adam(learning_rate=0.001)
+    # Select optimizer
+    if optimizer == 'rmsprop':
+        opt = RMSprop(learning_rate=learning_rate)
+    elif optimizer == 'sgd':
+        opt = SGD(learning_rate=learning_rate)
+    else:
+        opt = Adam(learning_rate=learning_rate)
     
     model.compile(optimizer=opt, loss='mse', metrics=['mae'])
     return model
@@ -264,6 +275,9 @@ def save_model(model, history, results, model_dir):
     with open(os.path.join(model_dir, 'label_encoders.pkl'), 'wb') as f: pickle.dump(label_encoders, f)
     if 'feature_cols' in results:
          with open(os.path.join(model_dir, 'feature_cols.json'), 'w') as f: json.dump(results['feature_cols'], f)
+    # Save comprehensive results.json
+    with open(os.path.join(model_dir, 'results.json'), 'w') as f:
+        json.dump(results, f, indent=4)
 
 def calculate_directional_accuracy(y_true, y_pred):
     """Phase 3: Realism Metric - Directional Accuracy"""
@@ -276,14 +290,17 @@ def calculate_directional_accuracy(y_true, y_pred):
     correct_direction = np.sign(diff_true[:min_len]) == np.sign(diff_pred[:min_len])
     return np.mean(correct_direction)
 
-def train_model(df, commodity='cinnamon', epochs=50, batch_size=32, **kwargs):
+def train_model(df, commodity='cinnamon', epochs=200, batch_size=32, **kwargs):
     """
-    Train model using PHASE 3 Strict CHRONOLOGICAL split (70/15/15).
+    Train model using Strict CHRONOLOGICAL split (70/15/15).
+    Improved: StandardScaler for target, 200 epochs, patience=20,
+    ReduceLROnPlateau callback, comprehensive metrics, parameterized architecture.
     """
     global scaler_features, scaler_target
     
+    # Use StandardScaler for both features and target (matching notebook approach)
     scaler_features = StandardScaler()
-    scaler_target = MinMaxScaler(feature_range=(0, 1))
+    scaler_target = StandardScaler()
     
     # 1. Prepare Sequences
     X, y, feature_cols, target_dates = prepare_sequences(df, SEQUENCE_LENGTH)
@@ -320,35 +337,79 @@ def train_model(df, commodity='cinnamon', epochs=50, batch_size=32, **kwargs):
 
     logger.info(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
 
-    # 4. Train
+    # 4. Load best params from previous tuning if available
+    model_dir = os.path.join(BASE_DIR, 'models', f'lstm_{commodity}')
+    build_kwargs = {}
+    try:
+        results_path = os.path.join(model_dir, 'results.json')
+        if os.path.exists(results_path):
+            with open(results_path, 'r') as f:
+                prev_results = json.load(f)
+            if 'best_params' in prev_results:
+                bp = prev_results['best_params']
+                build_kwargs = {
+                    'model_type': bp.get('layer_type', 'GRU'),
+                    'units1': bp.get('units1', 128),
+                    'units2': bp.get('units2', 64),
+                    'dropout1': bp.get('dropout1', 0.2),
+                    'dropout2': bp.get('dropout2', 0.2),
+                    'dense_units': bp.get('dense_units', 32),
+                    'learning_rate': bp.get('learning_rate', 0.001),
+                    'use_batch_norm': bp.get('use_batch_norm', False),
+                    'optimizer': bp.get('optimizer', 'adam'),
+                }
+                logger.info(f"Using tuned hyperparameters: {build_kwargs}")
+    except Exception as e:
+        logger.warning(f"Could not load previous tuning results: {e}")
+
+    # 5. Build & Train
     input_shape = (X_train.shape[1], X_train.shape[2])
-    # GRU is the requested architecture
-    model = build_model(input_shape, model_type='GRU')
+    model = build_model(input_shape, **build_kwargs)
+    
+    callbacks = [
+        EarlyStopping(patience=20, restore_best_weights=True, monitor='val_loss'),
+        ReduceLROnPlateau(factor=0.5, patience=5, min_lr=1e-6, monitor='val_loss', verbose=1)
+    ]
     
     history = model.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
         epochs=epochs,
         batch_size=batch_size,
-        callbacks=[EarlyStopping(patience=10, restore_best_weights=True)],
+        callbacks=callbacks,
         shuffle=False,
         verbose=1
     )
 
-    # 5. Evaluate Realism (Phase 3)
+    # 6. Evaluate with comprehensive metrics
     y_pred_test = model.predict(X_test).flatten()
     y_true_orig = y_test_raw
     y_pred_orig = scaler_target.inverse_transform(y_pred_test.reshape(-1,1)).flatten()
     
+    test_mae = mean_absolute_error(y_true_orig, y_pred_orig)
+    test_rmse = np.sqrt(mean_squared_error(y_true_orig, y_pred_orig))
+    test_r2 = r2_score(y_true_orig, y_pred_orig)
     da = calculate_directional_accuracy(y_true_orig, y_pred_orig)
-    logger.info(f"Directional Accuracy on Test: {da:.2%}")
+    
+    logger.info(f"Test MAE: {test_mae:.2f} | RMSE: {test_rmse:.2f} | R²: {test_r2:.4f} | DA: {da:.2%}")
 
-    # 6. Save Results
+    # 7. Save Results with comprehensive metrics
+    epochs_trained = len(history.history['loss'])
     results = {
+        'mae': float(test_mae),
+        'rmse': float(test_rmse),
+        'r2': float(test_r2),
+        'directional_accuracy': float(da),
+        'epochs_trained': epochs_trained,
+        'final_train_loss': float(history.history['loss'][-1]),
+        'final_val_loss': float(history.history['val_loss'][-1]),
         'feature_cols': feature_cols,
-        'directional_accuracy': da
+        'best_params': build_kwargs if build_kwargs else {
+            'units1': 128, 'units2': 64, 'dropout1': 0.2, 'dropout2': 0.2,
+            'dense_units': 32, 'learning_rate': 0.001,
+            'layer_type': 'GRU', 'use_batch_norm': False, 'optimizer': 'adam'
+        },
     }
-    model_dir = os.path.join(BASE_DIR, 'models', f'lstm_{commodity}')
     save_model(model, history, results, model_dir)
     
     return model, history, results
@@ -357,7 +418,7 @@ def load_artifacts(commodity='cinnamon'):
     global scaler_features, scaler_target, label_encoders
     model_dir = os.path.join(BASE_DIR, 'models', f'lstm_{commodity}')
     try:
-        model = load_model(os.path.join(model_dir, 'lstm_model.keras'))
+        model = load_model(os.path.join(model_dir, 'lstm_model.keras'), safe_mode=False)
         with open(os.path.join(model_dir, 'scaler_features.pkl'), 'rb') as f: scaler_features = pickle.load(f)
         with open(os.path.join(model_dir, 'scaler_target.pkl'), 'rb') as f: scaler_target = pickle.load(f)
         enc_path = os.path.join(model_dir, 'label_encoders.pkl')
@@ -681,10 +742,8 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None
     results = {}
 
     for name, params in scenarios.items():
-        # OPTIMIZATION 1: Buffer Windowing — use last 1500 rows.
-        # 1500 rows guarantees stable 12-month rolling averages even for
-        # sparse multi-region datasets while still being fast (milliseconds).
-        current_df = start_df.tail(1500).copy().reset_index(drop=True)
+        # Use the full input dataframe (already filtered to one grade/region by the API).
+        current_df = start_df.copy()
         scenario_dates = []
         scenario_prices = []
         scenario_explanations = []
@@ -756,10 +815,10 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None
             # We must append BEFORE predicting to get Lags/Rolling for 't'
             current_df = pd.concat([current_df, pd.DataFrame([next_row])], ignore_index=True)
             
-            # OPTIMIZATION 1b: Sliding window for feature engineering.
-            # Pass last 1500 rows to preprocess_data to ensure 12-month rolling
-            # averages are stable for sparse regions, then copy features back.
-            small_window = current_df.tail(1500).copy()
+            # Performance: Only preprocess last 60 rows for lag/rolling calculation.
+            # 60 > 12 (max rolling window), so all features compute correctly.
+            # This avoids re-processing the full DataFrame every iteration.
+            small_window = current_df.tail(60).copy()
             processed_window = preprocess_data(small_window, training_mode=False)
             # Copy computed features (lags, rolling avgs) back to the main DataFrame
             current_df.iloc[-1] = processed_window.iloc[-1]
@@ -803,11 +862,11 @@ def forecast_multistep(model, df, steps=24, commodity='cinnamon', overrides=None
             # Scenario Nudges (Explicit Manual Override)
             if name == 'Optimistic':
                 if commodity.lower() == 'pepper':
-                    clamped_pred *= 1.008 # Boosted Nudge for Pepper (0.8% per month)
+                    clamped_pred *= 1.015 # Stronger nudge for Pepper (1.5% per month)
                 else:
-                    clamped_pred *= 1.002 # Subtle cumulative boost
+                    clamped_pred *= 1.010 # Clear upward nudge (1% per month)
             elif name == 'Pessimistic':
-                clamped_pred *= 0.998 # Subtle cumulative drag
+                clamped_pred *= 0.990 # Clear downward drag (1% per month)
             
             # --- HARD FLOOR SUPPORT (The Fix) ---
             # If price drops below 70% of last real price, force it to stay there.
@@ -844,8 +903,8 @@ if __name__ == "__main__":
         if os.path.exists(data_path):
             print(f"\n--- Training {com} Model ---")
             df = load_and_prepare_data(data_path)
-            # Train for production (30 epochs with EarlyStopping is usually sufficient)
-            model, history, results = train_model(df, commodity=com, epochs=30) 
+            # Train for production (200 epochs max with EarlyStopping)
+            model, history, results = train_model(df, commodity=com) 
             
             print(f"Generating Verification Forecast...")
             forecasts = forecast_multistep(model, df, steps=12, commodity=com)
