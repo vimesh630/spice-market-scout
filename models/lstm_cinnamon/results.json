@@ -1,11 +1,11 @@
 {
-    "mae": 204.89035302792294,
-    "rmse": 242.30856997901859,
-    "r2": 0.9005592011380227,
-    "directional_accuracy": 0.95,
-    "epochs_trained": 57,
-    "final_train_loss": 0.001815451541915536,
-    "final_val_loss": 0.0028485518414527178,
+    "mae": 218.55706315335854,
+    "rmse": 272.64076799379677,
+    "r2": 0.7064906210154943,
+    "directional_accuracy": 0.8964285714285715,
+    "epochs_trained": 40,
+    "final_train_loss": 0.04084727168083191,
+    "final_val_loss": 0.14802835881710052,
     "feature_cols": [
         "Grade_encoded",
         "Region_encoded",

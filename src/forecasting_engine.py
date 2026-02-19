@@ -62,6 +62,13 @@ def preprocess_data(df, training_mode=True):
         df = df.sort_values('Date')
         df['Month'] = df['Date'] # Legacy support
 
+    # Key Fix from Notebooks: Handle missing values in Regional_Price using National_Price
+    # "df.loc[df['Is_Active_Region'] == 0, 'Regional_Price'] = df.loc[df['Is_Active_Region'] == 0, 'National_Price']"
+    if 'Is_Active_Region' in df.columns and 'National_Price' in df.columns and 'Regional_Price' in df.columns:
+         mask = df['Is_Active_Region'] == 0
+         # Ensure alignment
+         df.loc[mask, 'Regional_Price'] = df.loc[mask, 'National_Price']
+
     # Encode categorical variables
     for col in ['Grade', 'Region']:
         if col in df.columns:
@@ -127,17 +134,15 @@ def preprocess_data(df, training_mode=True):
         df = df.sort_values('Date') if 'Date' in df.columns else df
         df = df.ffill()
 
-    # Cold-start handling: Strict 0 filling for missing lags/rolling to avoid leakage.
-    # The notebook strategy is ffill then 0. 
-    # We do NOT backfill from future.
-    # We do NOT fill with current value (which would be leakage if current is target, 
-    # though here they are features. But 'Regional_Price_lag_1' missing means we are at t=0. 
-    # Filling with t=0 price implies persistence. 0 implies unknown.
-    # Notebook says: "avoiding cold-start backfilling".
-    # We will stick to 0 for remaining NaNs as per line 126.
-    pass
-
-    df = df.fillna(0)
+    # Cold-start handling:
+    # Notebooks use bfill() then ffill().
+    # For TRAINING, bfill is acceptable (using full history).
+    # For INFERENCE (training_mode=False), bfill is LEAKAGE if we are at the end of data, but here we are processing history.
+    # However, to be safe and match notebook exactly during training:
+    if training_mode:
+        df = df.bfill().ffill()
+    else:
+        df = df.ffill().fillna(0) # Strict no-future-peeking for inference
     
     return df
 
