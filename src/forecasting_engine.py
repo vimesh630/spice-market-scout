@@ -7,7 +7,9 @@ from tensorflow.keras.layers import LSTM, GRU, SimpleRNN, Dense, Dropout, BatchN
 from tensorflow.keras.optimizers import Adam, RMSprop, SGD
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.preprocessing import MinMaxScaler, LabelEncoder, StandardScaler
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder, StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
 import logging
 from datetime import datetime
 import json
@@ -290,35 +292,54 @@ def calculate_directional_accuracy(y_true, y_pred):
     correct_direction = np.sign(diff_true[:min_len]) == np.sign(diff_pred[:min_len])
     return np.mean(correct_direction)
 
-def train_model(df, commodity='cinnamon', epochs=200, batch_size=32, **kwargs):
+def train_model(df, commodity='cinnamon', epochs=200, batch_size=32, scaler_type='standard', shuffle=False, **kwargs):
     """
-    Train model using Strict CHRONOLOGICAL split (70/15/15).
-    Improved: StandardScaler for target, 200 epochs, patience=20,
-    ReduceLROnPlateau callback, comprehensive metrics, parameterized architecture.
+    Train model using Strict CHRONOLOGICAL split (70/15/15) by default.
+    Set shuffle=True ONLY to verify data leakage hypothesis (matching notebooks).
     """
     global scaler_features, scaler_target
     
+    if shuffle:
+        logger.warning("⚠️ TRAINING WITH SHUFFLE=TRUE! THIS CAUSES DATA LEAKAGE. USE FOR VERIFICATION ONLY. ⚠️")
+
     # Use StandardScaler for both features and target (matching notebook approach)
     scaler_features = StandardScaler()
-    scaler_target = StandardScaler()
+    
+    if scaler_type == 'minmax':
+        scaler_target = MinMaxScaler(feature_range=(0, 1))
+    else:
+        scaler_target = StandardScaler()
     
     # 1. Prepare Sequences
     X, y, feature_cols, target_dates = prepare_sequences(df, SEQUENCE_LENGTH)
     
     if len(X) == 0: raise ValueError("No sequences created.")
 
-    # Strict chronological order across all sequences before splitting.
-    sort_idx = np.argsort(target_dates)
-    X = X[sort_idx]
-    y = y[sort_idx]
+    if not shuffle:
+        # Strict chronological order across all sequences before splitting.
+        sort_idx = np.argsort(target_dates)
+        X = X[sort_idx]
+        y = y[sort_idx]
 
-    # 2. Split (before scaling to avoid leakage)
-    idx_train = int(len(X) * 0.70)
-    idx_val = int(len(X) * 0.85)
+        # 2. Split (Cronological)
+        idx_train = int(len(X) * 0.70)
+        idx_val = int(len(X) * 0.85)
 
-    X_train_raw, y_train_raw = X[:idx_train], y[:idx_train]
-    X_val_raw, y_val_raw = X[idx_train:idx_val], y[idx_train:idx_val]
-    X_test_raw, y_test_raw = X[idx_val:], y[idx_val:]
+        X_train_raw, y_train_raw = X[:idx_train], y[:idx_train]
+        X_val_raw, y_val_raw = X[idx_train:idx_val], y[idx_train:idx_val]
+        X_test_raw, y_test_raw = X[idx_val:], y[idx_val:]
+    
+    else:
+        # Random Split (Mimicking Notebook Data Leakage)
+        # 15% Test, then 15% Val from remaining (approx 72/13/15 split effectively or similar)
+        # Notebooks used train_test_split(test_size=0.2) then train_test_split(test_size=0.25) -> 60/20/20
+        # We will match the notebook split ratios roughly: Train 70%, Val 15%, Test 15%
+        
+        X_temp, X_test_raw, y_temp, y_test_raw = train_test_split(X, y, test_size=0.15, random_state=42, shuffle=True)
+        X_train_raw, X_val_raw, y_train_raw, y_val_raw = train_test_split(X_temp, y_temp, test_size=0.176, random_state=42, shuffle=True) # 0.176 of 85% is ~15% total
+
+    if len(X_train_raw) == 0 or len(X_val_raw) == 0 or len(X_test_raw) == 0:
+        raise ValueError("Insufficient sequences for train/val/test split.")
 
     if len(X_train_raw) == 0 or len(X_val_raw) == 0 or len(X_test_raw) == 0:
         raise ValueError("Insufficient sequences for train/val/test split.")
@@ -904,7 +925,9 @@ if __name__ == "__main__":
             print(f"\n--- Training {com} Model ---")
             df = load_and_prepare_data(data_path)
             # Train for production (200 epochs max with EarlyStopping)
-            model, history, results = train_model(df, commodity=com) 
+            # Use 'minmax' for Cinnamon/Pepper (more robust), 'standard' for Clove.
+            stype = 'standard' if com == 'clove' else 'minmax'
+            model, history, results = train_model(df, commodity=com, scaler_type=stype) 
             
             print(f"Generating Verification Forecast...")
             forecasts = forecast_multistep(model, df, steps=12, commodity=com)

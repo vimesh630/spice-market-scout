@@ -1,11 +1,11 @@
 {
-    "mae": 235.17281470424103,
-    "rmse": 362.9279243069405,
-    "r2": -0.00042591742377795505,
-    "directional_accuracy": 0.8160919540229885,
-    "epochs_trained": 27,
-    "final_train_loss": 0.20671004056930542,
-    "final_val_loss": 0.3346330225467682,
+    "mae": 266.2436623604911,
+    "rmse": 323.6370535338299,
+    "r2": 0.20446252660500608,
+    "directional_accuracy": 0.7413793103448276,
+    "epochs_trained": 56,
+    "final_train_loss": 0.00917039904743433,
+    "final_val_loss": 0.012382404878735542,
     "feature_cols": [
         "Grade_encoded",
         "Region_encoded",
@@ -64,7 +64,7 @@
         "Inflation_Rate_rolling_12"
     ],
     "best_params": {
-        "model_type": "LSTM",
+        "model_type": "GRU",
         "units1": 512,
         "units2": 32,
         "dropout1": 0.30000000000000004,
